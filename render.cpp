@@ -9,6 +9,7 @@ static LV2_Feature hardRTCapable = { LV2_CORE__hardRTCapable, NULL };
 static LV2_Feature buf_size_features[1] = {
   { LV2_BUF_SIZE__fixedBlockLength, NULL },
 };
+
 LV2_Feature* features[3] = {
   &hardRTCapable, &buf_size_features[0], nullptr
 };
@@ -67,11 +68,14 @@ public:
       analogIn(9, analog[3]); // Attack
       analogIn(10, analog[4]); // Transpose
     }
+
     instance->run(bela->audioFrames);
+
     for (int frame = 0; frame < bela->audioFrames; frame++) {
       auto const sample = port[2][frame];
-      audioWrite(bela, frame, 0, sample);
-      audioWrite(bela, frame, 1, sample);
+      for (int channel = 0; channel < bela->audioOutChannels; channel++) {
+        audioWrite(bela, frame, channel, sample);
+      }
     }
   }
 private:
