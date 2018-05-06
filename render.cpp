@@ -1,4 +1,5 @@
 #include <Bela.h>
+#include <algorithm>
 #include <iostream>
 #include <memory>
 #include <vector>
@@ -31,12 +32,13 @@ protected:
 public:
   LV2Plugin(BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
   : Mode(), instance(Lilv::Instance::create(p, bela->audioSampleRate, features)) {
+    static LilvNode *lv2_core__sampleRate = lilv.new_uri(LV2_CORE__sampleRate);
     auto const count = p.get_num_ports();
-    minValue.resize(count); maxValue.resize(count); defValue.resize(count); value.resize(count);
+    minValue.resize(count); maxValue.resize(count); defValue.resize(count);
+    value.resize(count);
     p.get_port_ranges_float(&minValue.front(), &maxValue.front(), &defValue.front());
     for (int i = 0; i < count; i++) {
-      auto port = p.get_port_by_index(i);
-      if (port.has_property(lilv.new_uri(LV2_CORE__sampleRate))) {
+      if (p.get_port_by_index(i).has_property(lv2_core__sampleRate)) {
         minValue[i] *= bela->audioSampleRate;
         maxValue[i] *= bela->audioSampleRate;
       }
@@ -55,6 +57,7 @@ protected:
   void connectAudioOut(BelaContext *bela, unsigned lv2PortIndex, unsigned channel) {
     connectAudio(bela, lv2PortIndex, channel, bela->audioOut);
   }
+private:
   void connectAudio(BelaContext *bela, unsigned lv2PortIndex, unsigned channel, float *buffer) {
     instance->connect_port(lv2PortIndex, &buffer[bela->audioFrames * channel]);
   }
@@ -98,9 +101,9 @@ public:
 
     instance->run(bela->audioFrames);
 
-    for (int frame = 0; frame < bela->audioFrames; frame++) {
-      audioWriteNI(bela, frame, 1, audioReadNI(bela, frame, 0));
-    }
+    // Duplicate output to both channels
+    std::copy_n(&bela->audioOut[0 * bela->audioFrames], bela->audioFrames,
+                &bela->audioOut[1 * bela->audioFrames]);
   }
 };
 
