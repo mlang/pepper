@@ -1,6 +1,7 @@
 #include <Bela.h>
 #include <AuxTaskNonRT.h>
 #include <brlapi.h>
+#include <boost/lockfree/spsc_queue.hpp>
 #include <algorithm>
 #include <cstring>
 #include <iostream>
@@ -11,20 +12,38 @@
 
 enum TaskKind { RT, NonRT };
 
+template<typename F, typename C, typename Tuple, size_t ...S >
+decltype(auto) apply_tuple_impl(C&& cl, F&& fn, Tuple&& t, std::index_sequence<S...>) {
+  return ((std::forward<C>(cl))->*(std::forward<F>(fn)))(std::get<S>(std::forward<Tuple>(t))...);
+}
+template<typename C, typename F, typename Tuple>
+decltype(auto) apply_from_tuple(C&& cl, F&& fn, Tuple&& t) {
+  std::size_t constexpr tSize = std::tuple_size<typename std::remove_reference<Tuple>::type>::value;
+  return apply_tuple_impl(std::forward<C>(cl), std::forward<F>(fn), std::forward<Tuple>(t), std::make_index_sequence<tSize>());
+} 
+
 template<enum TaskKind, typename Class> class MemFun;
-template<typename Class> class MemFun<NonRT, Class> : AuxTaskNonRT {
-  void (Class::* const member_function)();
+template<typename Class, typename... Args>
+class MemFun<NonRT, void (Class::*)(Args...)> : AuxTaskNonRT {
+  void (Class::* const member_function)(Args...);
   Class * const instance;
+  boost::lockfree::spsc_queue<std::tuple<Args...>, boost::lockfree::capacity<10>>
+  queue;
   static void call(void *ptr, int size) {
     auto instance = static_cast<MemFun *>(ptr);
-    ((instance->instance)->*(instance->member_function))();
+    instance->queue.consume_one([instance](std::tuple<Args...> &args) {
+      apply_from_tuple(instance->instance, instance->member_function, args);
+    });
   }
 public:
-  MemFun(const char *name, void (Class::*callback)(), Class *instance)
+  MemFun(const char *name, void (Class::*callback)(Args...), Class *instance)
   : AuxTaskNonRT(), member_function(callback), instance(instance) {
     create(name, call);
   }
-  void operator()() { schedule(this, sizeof(Class)); }
+  void operator()(Args... args) {
+    queue.push(std::tuple<Args...>(args...));
+    schedule(this, sizeof(Class));
+  }
 };
 
 class Display {
@@ -153,7 +172,7 @@ class pepper {
   std::vector<std::unique_ptr<Mode>> plugins;
   int index = -1;
   Display braille;
-  MemFun<NonRT, Display> writeText;
+  MemFun<NonRT, decltype(&Display::writeText)> writeText;
 public:
   pepper(BelaContext *bela)
   : braille()
