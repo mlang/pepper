@@ -51,9 +51,6 @@ class Display {
   brlapi_handle_t *handle() { return reinterpret_cast<brlapi_handle_t *>(brlapiHandle.get()); }
   std::vector<char> text;
   bool connected = false;
-public:
-  Display() : brlapiHandle(new char[brlapi_getHandleSize()]), connected(connect()) {}
-  ~Display() { if (connected) brlapi__closeConnection(handle()); }
   bool connect() {
     brlapi_settings_t settings = BRLAPI_SETTINGS_INITIALIZER;
     auto fd = brlapi__openConnection(handle(), &settings, &settings);
@@ -68,11 +65,20 @@ public:
       brlapi__closeConnection(handle());
     }
     return false;
-  }  
-  char *getText() { return text.data(); }
-  void writeText() {
+  }
+
+  void doWriteText() {
     if (connected) brlapi__writeText(handle(), BRLAPI_CURSOR_OFF, text.data());
   }
+public:
+  Display()
+  : brlapiHandle(new char[brlapi_getHandleSize()])
+  , connected(connect())
+  , writeText("writeText", &Display::doWriteText, this)
+  {}
+  ~Display() { if (connected) brlapi__closeConnection(handle()); }
+  MemFun<NonRT, decltype(&Display::doWriteText)> writeText;
+  char *getText() { return text.data(); }
 };
 
 static LV2_Feature hardRTCapable = { LV2_CORE__hardRTCapable, NULL };
@@ -172,11 +178,9 @@ class pepper {
   std::vector<std::unique_ptr<Mode>> plugins;
   int index = -1;
   Display braille;
-  MemFun<NonRT, decltype(&Display::writeText)> writeText;
 public:
   pepper(BelaContext *bela)
-  : braille()
-  , writeText("writeText", &Display::writeText, &braille) {
+  : braille() {
     lilv.load_all();
     auto lv2plugins = lilv.get_all_plugins();
     for (auto i = lv2plugins.begin(); !lv2plugins.is_end(i); i = lv2plugins.next(i)) {
@@ -194,7 +198,7 @@ public:
   }
   ~pepper() { for (auto &plugin: plugins) plugin->deactivate(); }
   void run(BelaContext *bela) {
-    writeText();
+    braille.writeText();
     if (index >= 0 && index < plugins.size()) {
       plugins[index]->run(bela);
     }
