@@ -1,7 +1,6 @@
+#include "AuxTask.h"
 #include <Bela.h>
-#include <AuxTaskNonRT.h>
 #include <brlapi.h>
-#include <boost/lockfree/spsc_queue.hpp>
 #include <algorithm>
 #include <cstring>
 #include <iostream>
@@ -9,42 +8,6 @@
 #include <vector>
 #include <lilv/lilvmm.hpp>
 #include <lv2/lv2plug.in/ns/ext/buf-size/buf-size.h>
-
-enum TaskKind { RT, NonRT };
-
-template<typename F, typename C, typename Tuple, size_t ...S >
-decltype(auto) apply_tuple_impl(C&& cl, F&& fn, Tuple&& t, std::index_sequence<S...>) {
-  return ((std::forward<C>(cl))->*(std::forward<F>(fn)))(std::get<S>(std::forward<Tuple>(t))...);
-}
-template<typename C, typename F, typename Tuple>
-decltype(auto) apply_from_tuple(C&& cl, F&& fn, Tuple&& t) {
-  std::size_t constexpr tSize = std::tuple_size<typename std::remove_reference<Tuple>::type>::value;
-  return apply_tuple_impl(std::forward<C>(cl), std::forward<F>(fn), std::forward<Tuple>(t), std::make_index_sequence<tSize>());
-} 
-
-template<enum TaskKind, typename Class> class MemFun;
-template<typename Class, typename... Args>
-class MemFun<NonRT, void (Class::*)(Args...)> : AuxTaskNonRT {
-  void (Class::* const member_function)(Args...);
-  Class * const instance;
-  boost::lockfree::spsc_queue<std::tuple<Args...>, boost::lockfree::capacity<10>>
-  queue;
-  static void call(void *ptr, int size) {
-    auto instance = static_cast<MemFun *>(ptr);
-    instance->queue.consume_one([instance](std::tuple<Args...> &args) {
-      apply_from_tuple(instance->instance, instance->member_function, args);
-    });
-  }
-public:
-  MemFun(const char *name, void (Class::*callback)(Args...), Class *instance)
-  : AuxTaskNonRT(), member_function(callback), instance(instance) {
-    create(name, call);
-  }
-  void operator()(Args... args) {
-    queue.push(std::tuple<Args...>(args...));
-    schedule(this, sizeof(Class));
-  }
-};
 
 class Display {
   std::unique_ptr<char[]> brlapiHandle;
@@ -67,7 +30,7 @@ class Display {
     return false;
   }
 
-  void doWriteText() {
+  void doWriteText(int i) {
     if (connected) brlapi__writeText(handle(), BRLAPI_CURSOR_OFF, text.data());
   }
 public:
@@ -77,7 +40,7 @@ public:
   , writeText("writeText", &Display::doWriteText, this)
   {}
   ~Display() { if (connected) brlapi__closeConnection(handle()); }
-  MemFun<NonRT, decltype(&Display::doWriteText)> writeText;
+  AuxTask<NonRT, decltype(&Display::doWriteText)> writeText;
   char *getText() { return text.data(); }
 };
 
@@ -198,7 +161,7 @@ public:
   }
   ~pepper() { for (auto &plugin: plugins) plugin->deactivate(); }
   void run(BelaContext *bela) {
-    braille.writeText();
+    braille.writeText(1);
     if (index >= 0 && index < plugins.size()) {
       plugins[index]->run(bela);
     }
