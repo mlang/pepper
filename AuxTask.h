@@ -1,25 +1,57 @@
 #if !defined(AUXTASK_H_INCLUDED)
 #define AUXTASK_H_INCLUDED
+// AuxTask runs a void function (with arguments) in a Bela auxiliary task.
+//
+// NOTE: Only the specialisation for class member function is implemented right now.
+//
+// ## Usage
+//
+// ### Pointer to (non overloaded) member function
+//
+// class Class {
+//   void doTask(...) { ... }
+// public:
+//   Class() : task("task", &Class::doTask, this) {}
+//   AuxTask<NonRT, &Class::doTask> task;
+// };
+// Class instance;
+// instance.task(...);
+//
+// (you need to pass the type of an overloaded member function explicitly.)
+//
+// ### Pointer to (non overloaded) function
+//
+// void doTask(...) {...}
+// AuxTask<NonRT, decltype(&doTask)> task("task", &doTask);
+// task(...);
+
 #include <cstddef>
 #include <AuxTaskNonRT.h>
 #include <boost/lockfree/spsc_queue.hpp>
 
 // In C++17 we can use std::apply(memfun, std::tuple_cat(std::tuple(instance), args))
-namespace detail {
+namespace compat {
 
-template<typename F, typename C, typename Tuple, size_t ...S>
-decltype(auto)
-apply_tuple_impl(C&& cl, F&& fn, Tuple&& t, std::index_sequence<S...>) {
-  return (std::forward<C>(cl)->*std::forward<F>(fn))
-         (std::get<S>(std::forward<Tuple>(t))...);
+template<typename MF, typename C, typename T, size_t... I>
+decltype(auto) apply_impl(MF&& mf, C *c, T&& t, std::index_sequence<I...>) {
+  return (c->*std::forward<MF>(mf))(std::get<I>(std::forward<T>(t))...);
 }
-template<typename C, typename F, typename Tuple>
-decltype(auto) apply_from_tuple(C&& cl, F&& fn, Tuple&& t) {
-  std::size_t constexpr tSize =
-    std::tuple_size<std::remove_reference_t<Tuple>>::value;
-  return apply_tuple_impl(std::forward<C>(cl), std::forward<F>(fn),
-                          std::forward<Tuple>(t), std::make_index_sequence<tSize>());
+template<typename F, typename T, size_t... I>
+decltype(auto) apply_impl(F&& f, T&& t, std::index_sequence<I...>) {
+  return std::forward<F>(f)(std::get<I>(std::forward<T>(t))...);
+}
+template<typename F, typename C, typename T>
+decltype(auto) apply(F&& fn, C&& cl, T&& t) {
+  std::size_t constexpr tSize = std::tuple_size<std::remove_reference_t<T>>::value;
+  return apply_impl(std::forward<F>(fn), std::forward<C>(cl), std::forward<T>(t),
+                    std::make_index_sequence<tSize>());
 } 
+template<typename F, typename T>
+decltype(auto) apply(F&& fn, T&& t) {
+  std::size_t constexpr tSize = std::tuple_size<std::remove_reference_t<T>>::value;
+  return apply_impl(std::forward<F>(fn), std::forward<T>(t),
+                    std::make_index_sequence<tSize>());
+}
 
 }
 
@@ -34,7 +66,7 @@ class AuxTask<NonRT, void (Class::*)(Args...)> : AuxTaskNonRT {
   static void call(void *ptr, int) {
     auto task = static_cast<AuxTask *>(ptr);
     task->arguments.consume_one([task](std::tuple<Args...> &args) {
-      detail::apply_from_tuple(task->instance, task->member_function, args);
+      compat::apply(task->member_function, task->instance, args);
     });
   }
 public:
@@ -42,9 +74,32 @@ public:
   : AuxTaskNonRT(), member_function(callback), instance(instance) {
     create(name, call);
   }
+  ~AuxTask() { cleanup(); }
   void operator()(Args... args) {
     arguments.push(std::tuple<Args...>(args...));
     schedule(this, sizeof(Class));
+  }
+};
+template<typename... Args>
+class AuxTask<NonRT, void (*)(Args...)> : AuxTaskNonRT {
+  void (* const function)(Args...);
+  boost::lockfree::spsc_queue<std::tuple<Args...>, boost::lockfree::capacity<10>>
+  arguments;
+  static void call(void *ptr, int) {
+    auto task = static_cast<AuxTask *>(ptr);
+    task->arguments.consume_one([task](std::tuple<Args...> &args) {
+      compat::apply(task->function, args);
+    });
+  }
+public:
+  AuxTask(const char *name, void (*callback)(Args...))
+  : AuxTaskNonRT(), function(callback) {
+    create(name, call);
+  }
+  ~AuxTask() { cleanup(); }
+  void operator()(Args... args) {
+    arguments.push(std::tuple<Args...>(args...));
+    schedule(this, 1);
   }
 };
 #endif // AUXTASK_H_INCLUDED
