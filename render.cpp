@@ -1,5 +1,6 @@
 #include <Bela.h>
 #include <AuxTaskNonRT.h>
+#include <brlapi.h>
 #include <algorithm>
 #include <cstring>
 #include <iostream>
@@ -24,6 +25,35 @@ public:
     create(name, call);
   }
   void operator()() { schedule(this, sizeof(Class)); }
+};
+
+class Display {
+  std::unique_ptr<char[]> brlapiHandle;
+  brlapi_handle_t *handle() { return reinterpret_cast<brlapi_handle_t *>(brlapiHandle.get()); }
+  std::vector<char> text;
+  bool connected = false;
+public:
+  Display() : brlapiHandle(new char[brlapi_getHandleSize()]), connected(connect()) {}
+  ~Display() { if (connected) brlapi__closeConnection(handle()); }
+  bool connect() {
+    brlapi_settings_t settings = BRLAPI_SETTINGS_INITIALIZER;
+    auto fd = brlapi__openConnection(handle(), &settings, &settings);
+    if (fd != -1) {
+      unsigned int x, y;
+      brlapi__getDisplaySize(handle(), &x, &y);
+      text.resize(x+1);
+      for(auto &c: text) c = ' '; text.back() = 0;
+      auto tty = brlapi__enterTtyMode(handle(), 0, "");
+      if (tty != -1) return true;
+
+      brlapi__closeConnection(handle());
+    }
+    return false;
+  }  
+  char *getText() { return text.data(); }
+  void writeText() {
+    if (connected) brlapi__writeText(handle(), BRLAPI_CURSOR_OFF, text.data());
+  }
 };
 
 static LV2_Feature hardRTCapable = { LV2_CORE__hardRTCapable, NULL };
@@ -122,12 +152,12 @@ class pepper {
   Lilv::World lilv;
   std::vector<std::unique_ptr<Mode>> plugins;
   int index = -1;
-  void do_task() {
-    return;
-  }
-  MemFun<NonRT, pepper> task;
+  Display braille;
+  MemFun<NonRT, Display> writeText;
 public:
-  pepper(BelaContext *bela) : task("task", &pepper::do_task, this) {
+  pepper(BelaContext *bela)
+  : braille()
+  , writeText("writeText", &Display::writeText, &braille) {
     lilv.load_all();
     auto lv2plugins = lilv.get_all_plugins();
     for (auto i = lv2plugins.begin(); !lv2plugins.is_end(i); i = lv2plugins.next(i)) {
@@ -145,7 +175,7 @@ public:
   }
   ~pepper() { for (auto &plugin: plugins) plugin->deactivate(); }
   void run(BelaContext *bela) {
-    task();
+    writeText();
     if (index >= 0 && index < plugins.size()) {
       plugins[index]->run(bela);
     }
