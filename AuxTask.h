@@ -65,7 +65,7 @@ class AuxTask<NonRT, void (Class::*)(Args...)> : AuxTaskNonRT {
   Class * const instance;
   boost::lockfree::spsc_queue<std::tuple<Args...>, boost::lockfree::capacity<10>>
   arguments;
-  static void call(void *ptr, int) {
+  static void call(void *ptr) {
     auto task = static_cast<AuxTask *>(ptr);
     task->arguments.consume_one([task](std::tuple<Args...> &args) {
       compat::apply(task->member_function, task->instance, args);
@@ -74,12 +74,12 @@ class AuxTask<NonRT, void (Class::*)(Args...)> : AuxTaskNonRT {
 public:
   AuxTask(const char *name, function_type callback, Class *instance)
   : AuxTaskNonRT(), member_function(callback), instance(instance) {
-    create(name, call);
+    create(name, call, this);
   }
   ~AuxTask() { cleanup(); }
   void operator()(Args... args) {
     arguments.push(std::tuple<Args...>(args...));
-    schedule(this, sizeof(Class));
+    schedule();
   }
 };
 template<typename... Args>
@@ -88,7 +88,7 @@ class AuxTask<NonRT, void (*)(Args...)> : AuxTaskNonRT {
   function_type const function;
   boost::lockfree::spsc_queue<std::tuple<Args...>, boost::lockfree::capacity<10>>
   arguments;
-  static void call(void *ptr, int) {
+  static void call(void *ptr) {
     auto task = static_cast<AuxTask *>(ptr);
     task->arguments.consume_one([task](std::tuple<Args...> &args) {
       compat::apply(task->function, args);
@@ -97,12 +97,12 @@ class AuxTask<NonRT, void (*)(Args...)> : AuxTaskNonRT {
 public:
   AuxTask(const char *name, function_type callback)
   : AuxTaskNonRT(), function(callback) {
-    create(name, call);
+    create(name, call, this);
   }
   ~AuxTask() { cleanup(); }
   void operator()(Args... args) {
     arguments.push(std::tuple<Args...>(args...));
-    schedule(this, 1);
+    schedule();
   }
 };
 #endif // AUXTASK_H_INCLUDED
