@@ -105,4 +105,34 @@ public:
     schedule();
   }
 };
+template<typename Class>
+class AuxTask<NonRT, void (Class::*)()> : AuxTaskNonRT {
+  using function_type = void (Class::*)();
+  function_type const member_function;
+  Class * const instance;
+  static void call(void *ptr) {
+    auto task = static_cast<AuxTask *>(ptr);
+    (task->instance->*task->member_function)();
+  }
+public:
+  AuxTask(const char *name, function_type callback, Class *instance)
+  : AuxTaskNonRT(), member_function(callback), instance(instance) {
+    create(name, call, this);
+  }
+  ~AuxTask() { cleanup(); }
+  void operator()() { schedule(); }
+};
+template<>
+class AuxTask<NonRT, void (*)()> : AuxTaskNonRT {
+  using function_type = void (*)();
+  function_type const function;
+  static void call(void *ptr) { static_cast<AuxTask *>(ptr)->function(); }
+public:
+  AuxTask(const char *name, function_type callback)
+  : AuxTaskNonRT(), function(callback) {
+    create(name, call, this);
+  }
+  ~AuxTask() { cleanup(); }
+  void operator()() { schedule(); }
+};
 #endif // AUXTASK_H_INCLUDED
