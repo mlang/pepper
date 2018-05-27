@@ -2,7 +2,7 @@
 #define AUXTASK_H_INCLUDED
 // AuxTask runs a void function (with arguments) in a Bela auxiliary task.
 //
-// NOTE: Only the specialisation for class member function is implemented right now.
+// NOTE: Only specialisations for NonRT tasks are implemented right now.
 //
 // ## Usage
 //
@@ -21,10 +21,10 @@
 //
 // ### Pointer to (non overloaded) function
 //
-// void doTask(...) {...}
+// void doTask(...) { ... }
 // AuxTask<NonRT, decltype(&doTask)> task("task", &doTask);
 // task(...);
-
+// ----------------------------------------------------------------------------------
 #include <cstddef>
 #include <AuxTaskNonRT.h>
 #include <boost/lockfree/spsc_queue.hpp>
@@ -40,10 +40,11 @@ template<typename F, typename T, size_t... I>
 decltype(auto) apply_impl(F&& f, T&& t, std::index_sequence<I...>) {
   return std::forward<F>(f)(std::get<I>(std::forward<T>(t))...);
 }
-template<typename F, typename C, typename T>
-decltype(auto) apply(F&& fn, C&& cl, T&& t) {
+
+template<typename MF, typename C, typename T>
+decltype(auto) apply(MF&& mf, C&& c, T&& t) {
   std::size_t constexpr tSize = std::tuple_size<std::remove_reference_t<T>>::value;
-  return apply_impl(std::forward<F>(fn), std::forward<C>(cl), std::forward<T>(t),
+  return apply_impl(std::forward<MF>(mf), std::forward<C>(c), std::forward<T>(t),
                     std::make_index_sequence<tSize>());
 } 
 template<typename F, typename T>
@@ -53,13 +54,14 @@ decltype(auto) apply(F&& fn, T&& t) {
                     std::make_index_sequence<tSize>());
 }
 
-}
+} // namespace compat
 
 enum TaskKind { RT, NonRT };
 template<enum TaskKind, typename Callback> class AuxTask;
 template<typename Class, typename... Args>
 class AuxTask<NonRT, void (Class::*)(Args...)> : AuxTaskNonRT {
-  void (Class::* const member_function)(Args...);
+  using function_type = void (Class::*)(Args...);
+  function_type const member_function;
   Class * const instance;
   boost::lockfree::spsc_queue<std::tuple<Args...>, boost::lockfree::capacity<10>>
   arguments;
@@ -70,7 +72,7 @@ class AuxTask<NonRT, void (Class::*)(Args...)> : AuxTaskNonRT {
     });
   }
 public:
-  AuxTask(const char *name, void (Class::*callback)(Args...), Class *instance)
+  AuxTask(const char *name, function_type callback, Class *instance)
   : AuxTaskNonRT(), member_function(callback), instance(instance) {
     create(name, call);
   }
@@ -82,7 +84,8 @@ public:
 };
 template<typename... Args>
 class AuxTask<NonRT, void (*)(Args...)> : AuxTaskNonRT {
-  void (* const function)(Args...);
+  using function_type = void (*)(Args...);
+  function_type const function;
   boost::lockfree::spsc_queue<std::tuple<Args...>, boost::lockfree::capacity<10>>
   arguments;
   static void call(void *ptr, int) {
@@ -92,7 +95,7 @@ class AuxTask<NonRT, void (*)(Args...)> : AuxTaskNonRT {
     });
   }
 public:
-  AuxTask(const char *name, void (*callback)(Args...))
+  AuxTask(const char *name, function_type callback)
   : AuxTaskNonRT(), function(callback) {
     create(name, call);
   }
