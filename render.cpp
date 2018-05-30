@@ -5,43 +5,87 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <vector>
 #include <lilv/lilvmm.hpp>
 #include <lv2/lv2plug.in/ns/ext/buf-size/buf-size.h>
 
+constexpr int nPins = 4;
+
+constexpr int trigOutPins[nPins] = {0, 5, 12, 13};
+constexpr int trigInPins[nPins] = {15, 14, 1, 3};
+constexpr int sw1Pin = 6;
+constexpr int ledPins[nPins] = {2, 4, 8, 9};
+constexpr int pwmPin = 7;
+constexpr int audioPins[2] = {0, 1};
+constexpr int gNumButtons = nPins;
+constexpr int gNumCVs = nPins*2;
+
+constexpr int buttonPins[gNumButtons] = {
+  sw1Pin, trigInPins[1], trigInPins[2], trigInPins[3]
+};
+constexpr int cvPins[gNumCVs] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+
 class Display {
   std::unique_ptr<char[]> brlapiHandle;
-  brlapi_handle_t *handle() { return reinterpret_cast<brlapi_handle_t *>(brlapiHandle.get()); }
-  std::vector<char> text;
+  brlapi_handle_t *handle() {
+    return reinterpret_cast<brlapi_handle_t *>(brlapiHandle.get());
+  }
   bool connected = false;
   bool connect() {
     brlapi_settings_t settings = BRLAPI_SETTINGS_INITIALIZER;
-    auto fd = brlapi__openConnection(handle(), &settings, &settings);
+    fd = brlapi__openConnection(handle(), &settings, &settings);
     if (fd != -1) {
       unsigned int x, y;
       brlapi__getDisplaySize(handle(), &x, &y);
-      text.resize(x+1);
-      for(auto &c: text) c = ' '; text.back() = 0;
-      auto tty = brlapi__enterTtyMode(handle(), 0, "");
-      if (tty != -1) return true;
+      auto tty = brlapi__enterTtyMode(handle(), 1, "");
+      if (tty != -1) {
+        return true;
+      }
 
       brlapi__closeConnection(handle());
     }
     return false;
   }
-
-  void doWriteText(int i) {
-    if (connected) brlapi__writeText(handle(), BRLAPI_CURSOR_OFF, text.data());
+  int fd;
+    
+  void writeText(std::string text, int cursor = BRLAPI_CURSOR_OFF) {
+    if (connected) brlapi__writeText(handle(), cursor, text.data());
+  }
+  void doRun() {
+    while (!gShouldStop) {
+      fd_set rfds, efds;
+      struct timeval tv;
+      FD_ZERO(&rfds);
+      FD_ZERO(&efds);
+      FD_SET(fd, &rfds);
+      FD_SET(fd, &efds);
+      tv.tv_sec = 0;
+      tv.tv_usec = 10000;
+      if (select(fd+1, &rfds, nullptr, &efds, &tv) > 0) {
+        brlapi_keyCode_t keyCode;
+	while (brlapi__readKey(handle(), 0, &keyCode)) {
+	  std::stringstream str;
+	  str << keyCode;
+	  writeText(str.str());
+	}
+      }
+    }
   }
 public:
   Display()
   : brlapiHandle(new char[brlapi_getHandleSize()])
   , connected(connect())
-  , writeText("writeText", &Display::doWriteText, this)
-  {}
-  ~Display() { if (connected) brlapi__closeConnection(handle()); }
-  AuxTask<NonRT, decltype(&Display::doWriteText)> writeText;
-  char *getText() { return text.data(); }
+  , run("brlapi-run", &Display::doRun, this) {
+    if (connected) writeText("Welcome!");
+  }
+  ~Display() {
+    if (connected) {
+      brlapi__leaveTtyMode(handle());
+      brlapi__closeConnection(handle());
+    }
+  }
+  AuxTask<NonRT, decltype(&Display::doRun)> run;
 };
 
 static LV2_Feature hardRTCapable = { LV2_CORE__hardRTCapable, NULL };
@@ -144,6 +188,7 @@ class pepper {
 public:
   pepper(BelaContext *bela)
   : braille() {
+    braille.run();
     lilv.load_all();
     auto lv2plugins = lilv.get_all_plugins();
     for (auto i = lv2plugins.begin(); !lv2plugins.is_end(i); i = lv2plugins.next(i)) {
@@ -161,7 +206,6 @@ public:
   }
   ~pepper() { for (auto &plugin: plugins) plugin->deactivate(); }
   void run(BelaContext *bela) {
-    braille.writeText(1);
     if (index >= 0 && index < plugins.size()) {
       plugins[index]->run(bela);
     }
@@ -181,8 +225,13 @@ bool setup(BelaContext *context, void *userData) {
     std::cerr << "This project only works in non-interleaved mode." << std::endl;
     return false;
   }
+  pinMode(context, 0, pwmPin, OUTPUT);
+  for(unsigned int i = 0; i < nPins; ++i) {
+    pinMode(context, 0, trigOutPins[i], OUTPUT);
+    pinMode(context, 0, trigInPins[i], INPUT);
+  }
   p = std::unique_ptr<pepper>(new pepper(context));
-  return true;
+  return bool(p);
 }
 
 void render(BelaContext *context, void *) {

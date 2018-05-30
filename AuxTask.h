@@ -26,7 +26,9 @@
 // task(...);
 // ----------------------------------------------------------------------------------
 #include <cstddef>
+#include <tuple>
 #include <utility>
+#include <boost/lockfree/spsc_queue.hpp>
 #include <AuxTaskNonRT.h>
 
 // In C++17 we can use std::apply(memfun, std::tuple_cat(std::tuple(instance), args))
@@ -63,26 +65,22 @@ class AuxTask<NonRT, void (Class::*)(Args...)> : AuxTaskNonRT {
   using function_type = void (Class::*)(Args...);
   function_type const member_function;
   Class * const instance;
-  struct storage {
-    function_type const member_function;
-    Class * const instance;
-    std::tuple<Args...> args;
-  };
-  static void call(void *ptr, int size) {
-    auto task = static_cast<storage *>(ptr);
-    compat::apply(task->member_function, task->instance, task->args);
+  boost::lockfree::spsc_queue<std::tuple<Args...>, boost::lockfree::capacity<10>> arguments;
+  static void call(void *ptr) {
+    auto task = static_cast<AuxTask *>(ptr);
+    task->arguments.consume_one([task](std::tuple<Args...> &args) {
+      compat::apply(task->member_function, task->instance, args);
+    });
   }
 public:
   AuxTask(const char *name, function_type callback, Class *instance)
   : AuxTaskNonRT(), member_function(callback), instance(instance) {
-    static_assert(std::is_trivially_copyable<std::tuple<Args...>>::value,
-                  "arguments to callback must be trivially copyable");
-    create(name, call);
+    create(name, call, this);
   }
   ~AuxTask() { cleanup(); }
   void operator()(Args... args) {
-    storage data = { member_function, instance, std::tuple<Args...>(args...) };
-    schedule(&data, sizeof(storage));
+    arguments.push(std::tuple<Args...>(args...));
+    schedule();
   }
 };
 template<typename... Args>

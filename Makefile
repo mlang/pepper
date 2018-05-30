@@ -1,4 +1,2 @@
-BELA_HOME=~/Modular/Bela
-
-build:
-	$(BELA_HOME)/scripts/build_project.sh -m "CPPFLAGS='-I/usr/include/lilv-0' LDLIBS='-llilv-0'" $(CURDIR)
+all:
+	$(MAKE) -C ../.. PROJECT=pepper CPPFLAGS='-std=c++14 -Wno-deprecated-declarations -I/usr/include/lilv-0' LDLIBS='-llilv-0 -lbrlapi'
