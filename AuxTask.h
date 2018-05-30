@@ -12,7 +12,7 @@
 //   void doTask(...) { ... }
 // public:
 //   Class() : task("task", &Class::doTask, this) {}
-//   AuxTask<NonRT, &Class::doTask> task;
+//   AuxTask<NonRT, decltype(&Class::doTask)> task;
 // };
 // Class instance;
 // instance.task(...);
@@ -26,8 +26,8 @@
 // task(...);
 // ----------------------------------------------------------------------------------
 #include <cstddef>
+#include <utility>
 #include <AuxTaskNonRT.h>
-#include <boost/lockfree/spsc_queue.hpp>
 
 // In C++17 we can use std::apply(memfun, std::tuple_cat(std::tuple(instance), args))
 namespace compat {
@@ -63,46 +63,51 @@ class AuxTask<NonRT, void (Class::*)(Args...)> : AuxTaskNonRT {
   using function_type = void (Class::*)(Args...);
   function_type const member_function;
   Class * const instance;
-  boost::lockfree::spsc_queue<std::tuple<Args...>, boost::lockfree::capacity<10>>
-  arguments;
-  static void call(void *ptr) {
-    auto task = static_cast<AuxTask *>(ptr);
-    task->arguments.consume_one([task](std::tuple<Args...> &args) {
-      compat::apply(task->member_function, task->instance, args);
-    });
+  struct storage {
+    function_type const member_function;
+    Class * const instance;
+    std::tuple<Args...> args;
+  };
+  static void call(void *ptr, int size) {
+    auto task = static_cast<storage *>(ptr);
+    compat::apply(task->member_function, task->instance, task->args);
   }
 public:
   AuxTask(const char *name, function_type callback, Class *instance)
   : AuxTaskNonRT(), member_function(callback), instance(instance) {
-    create(name, call, this);
+    static_assert(std::is_trivially_copyable<std::tuple<Args...>>::value,
+                  "arguments to callback must be trivially copyable");
+    create(name, call);
   }
   ~AuxTask() { cleanup(); }
   void operator()(Args... args) {
-    arguments.push(std::tuple<Args...>(args...));
-    schedule();
+    storage data = { member_function, instance, std::tuple<Args...>(args...) };
+    schedule(&data, sizeof(storage));
   }
 };
 template<typename... Args>
 class AuxTask<NonRT, void (*)(Args...)> : AuxTaskNonRT {
   using function_type = void (*)(Args...);
   function_type const function;
-  boost::lockfree::spsc_queue<std::tuple<Args...>, boost::lockfree::capacity<10>>
-  arguments;
-  static void call(void *ptr) {
-    auto task = static_cast<AuxTask *>(ptr);
-    task->arguments.consume_one([task](std::tuple<Args...> &args) {
-      compat::apply(task->function, args);
-    });
+  struct storage {
+    function_type const function;
+    std::tuple<Args...> args;
+  };
+  static void call(void *ptr, int size) {
+    auto task = static_cast<storage *>(ptr);
+    compat::apply(task->function, task->args);
   }
 public:
   AuxTask(const char *name, function_type callback)
   : AuxTaskNonRT(), function(callback) {
-    create(name, call, this);
+    static_assert(std::is_trivially_copyable<std::tuple<Args...>>::value,
+                  "arguments to callback must be trivially copyable");
+    create(name, call);
   }
   ~AuxTask() { cleanup(); }
   void operator()(Args... args) {
-    arguments.push(std::tuple<Args...>(args...));
-    schedule();
+    storage data = { function, std::tuple<Args...>(args...) };
+    schedule(&data, sizeof(storage));
   }
 };
 template<typename Class>
@@ -110,17 +115,24 @@ class AuxTask<NonRT, void (Class::*)()> : AuxTaskNonRT {
   using function_type = void (Class::*)();
   function_type const member_function;
   Class * const instance;
-  static void call(void *ptr) {
-    auto task = static_cast<AuxTask *>(ptr);
+  struct storage {
+    function_type const member_function;
+    Class * const instance;
+  };
+  static void call(void *ptr, int size) {
+    auto task = static_cast<storage *>(ptr);
     (task->instance->*task->member_function)();
   }
 public:
   AuxTask(const char *name, function_type callback, Class *instance)
   : AuxTaskNonRT(), member_function(callback), instance(instance) {
-    create(name, call, this);
+    create(name, call);
   }
   ~AuxTask() { cleanup(); }
-  void operator()() { schedule(); }
+  void operator()() {
+    storage data = { member_function, instance };
+    schedule(&data, sizeof(storage));
+  }
 };
 template<>
 class AuxTask<NonRT, void (*)()> : AuxTaskNonRT {
