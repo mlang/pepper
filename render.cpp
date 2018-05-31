@@ -168,7 +168,7 @@ public:
     for (int i = 0; i < count; i++) {
       switch (i) {
       case 4:
-        connectAudioIn(bela, 4, 0);
+        connectAudioOut(bela, 4, 0);
         break;
       default:
         instance->connect_port(i, &value[i]);
