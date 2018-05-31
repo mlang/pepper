@@ -1,5 +1,6 @@
 #include "AuxTask.h"
 #include <Bela.h>
+#include <DigitalChannelManager.h>
 #include <brlapi.h>
 #include <algorithm>
 #include <cstring>
@@ -112,10 +113,18 @@ class pepper {
   std::vector<std::unique_ptr<Mode>> plugins;
   int index = -1;
   Display braille;
+  DigitalChannelManager digital;
+  static void digitalChanged(bool state, unsigned int frame, void *data) {
+    if (state) {
+      auto instance = static_cast<pepper *>(data);
+      instance->index = (instance->index + 1) % instance->plugins.size();
+    }
+  }
 public:
   pepper(BelaContext *bela);
   ~pepper() { for (auto &plugin: plugins) plugin->deactivate(); }
   void run(BelaContext *bela) {
+    digital.processInput(bela->digital, bela->digitalFrames);
     if (index >= 0 && index < plugins.size()) {
       plugins[index]->run(bela);
     }
@@ -190,18 +199,54 @@ public:
   }
 };
 
+class FMOscillator final : public LV2Plugin {
+public:
+  static constexpr const char *uri = "http://plugin.org.uk/swh-plugins/fmOsc";
+  FMOscillator(BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
+  : LV2Plugin(bela, lilv, p) {
+    auto const count = p.get_num_ports();
+    for (int i = 0; i < count; i++) {
+      switch (i) {
+      case 2:
+        connectAudioOut(bela, i, 0);
+        break;
+      case 1:
+        connectAudioIn(bela, i, 0);
+        break;
+      default:
+        instance->connect_port(i, &value[i]);
+        break;
+      }
+    }
+  }
+  void run(BelaContext *bela) override {
+    controlFromAnalog(0, analogReadNI(bela, 0, 0)); // Waveform
+
+    instance->run(bela->audioFrames);
+
+    // Duplicate output to both channels
+    std::copy_n(&bela->audioOut[0 * bela->audioFrames], bela->audioFrames,
+                &bela->audioOut[1 * bela->audioFrames]);
+  }
+};
+
 pepper::pepper(BelaContext *bela)
 : braille() {
   braille.run();
+  digital.setCallback(digitalChanged);
+  digital.setCallbackArgument(trigInPins[3], this);
+  digital.manage(trigInPins[3], INPUT, true);
   lilv.load_all();
   auto lv2plugins = lilv.get_all_plugins();
   for (auto i = lv2plugins.begin(); !lv2plugins.is_end(i); i = lv2plugins.next(i)) {
     auto lv2plugin = Lilv::Plugin(lv2plugins.get(i));
     auto name = Lilv::Node(lv2plugin.get_name());
-    std::cout << "Seen " << name.as_string() << std::endl;
     auto uri = Lilv::Node(lv2plugin.get_uri());
     if (uri.is_uri() && strcmp(uri.as_string(), AnalogueOscillator::uri) == 0) {
       plugins.emplace_back(new AnalogueOscillator(bela, lilv, lv2plugin));
+      std::cout << "Loaded " << name.as_string() << std::endl;
+    } else if (uri.is_uri() && strcmp(uri.as_string(), FMOscillator::uri) == 0) {
+      plugins.emplace_back(new FMOscillator(bela, lilv, lv2plugin));
       std::cout << "Loaded " << name.as_string() << std::endl;
     }
   }
