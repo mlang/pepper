@@ -17,14 +17,11 @@ constexpr int trigInPins[nPins] = {15, 14, 1, 3};
 constexpr int sw1Pin = 6;
 constexpr int ledPins[nPins] = {2, 4, 8, 9};
 constexpr int pwmPin = 7;
-constexpr int audioPins[2] = {0, 1};
 constexpr int gNumButtons = nPins;
-constexpr int gNumCVs = nPins*2;
 
 constexpr int buttonPins[gNumButtons] = {
   sw1Pin, trigInPins[1], trigInPins[2], trigInPins[3]
 };
-constexpr int cvPins[gNumCVs] = { 0, 1, 2, 3, 4, 5, 6, 7 };
 
 class Display {
   std::unique_ptr<char[]> brlapiHandle;
@@ -64,13 +61,16 @@ class Display {
       tv.tv_usec = 10000;
       if (select(fd+1, &rfds, nullptr, &efds, &tv) > 0) {
         brlapi_keyCode_t keyCode;
-	while (brlapi__readKey(handle(), 0, &keyCode)) {
-	  std::stringstream str;
-	  str << keyCode;
-	  writeText(str.str());
-	}
+        while (brlapi__readKey(handle(), 0, &keyCode) == 1) {
+          keyPressed(keyCode);
+        }
       }
     }
+  }
+  void keyPressed(brlapi_keyCode_t &keyCode) {
+    std::stringstream str;
+    str << keyCode;
+    writeText(str.str());
   }
 public:
   Display()
@@ -105,6 +105,21 @@ public:
   virtual void activate() = 0;
   virtual void run(BelaContext *bela) = 0;
   virtual void deactivate() = 0;
+};
+
+class pepper {
+  Lilv::World lilv;
+  std::vector<std::unique_ptr<Mode>> plugins;
+  int index = -1;
+  Display braille;
+public:
+  pepper(BelaContext *bela);
+  ~pepper() { for (auto &plugin: plugins) plugin->deactivate(); }
+  void run(BelaContext *bela) {
+    if (index >= 0 && index < plugins.size()) {
+      plugins[index]->run(bela);
+    }
+  }
 };
 
 class LV2Plugin : public Mode {
@@ -144,20 +159,16 @@ private:
   }
 };
 
-class VocProc final : public LV2Plugin {
+class AnalogueOscillator final : public LV2Plugin {
 public:
-  static constexpr const char *uri = "http://hyperglitch.com/dev/VocProc";
-  VocProc(BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
+  static constexpr const char *uri = "http://plugin.org.uk/swh-plugins/analogueOsc";
+  AnalogueOscillator(BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
   : LV2Plugin(bela, lilv, p) {
     auto const count = p.get_num_ports();
     for (int i = 0; i < count; i++) {
       switch (i) {
-      case 0:
-      case 1:
-        connectAudioIn(bela, i, i);
-        break;
-      case 2:
-        connectAudioOut(bela, i, 0);
+      case 4:
+        connectAudioIn(bela, 4, 0);
         break;
       default:
         instance->connect_port(i, &value[i]);
@@ -166,11 +177,10 @@ public:
     }
   }
   void run(BelaContext *bela) override {
-    controlFromAnalog(3, analogReadNI(bela, 0, 0)); // Pitch Factor
-    controlFromAnalog(4, analogReadNI(bela, 0, 1)); // Pitch Factor); // Robotize/Whisperize
-    controlFromAnalog(8, analogReadNI(bela, 0, 2)); // Pitch Factor); // Threshold
-    controlFromAnalog(9, analogReadNI(bela, 0, 3)); // Pitch Factor); // Attack
-    controlFromAnalog(10, analogReadNI(bela, 0, 4)); // Pitch Factor); // Transpose
+    controlFromAnalog(1, analogReadNI(bela, 0, 0)); // Frequency
+    controlFromAnalog(0, analogReadNI(bela, 0, 1)); // Waveform
+    controlFromAnalog(2, analogReadNI(bela, 0, 2)); // Warmth
+    controlFromAnalog(3, analogReadNI(bela, 0, 3)); // Instability
 
     instance->run(bela->audioFrames);
 
@@ -180,37 +190,24 @@ public:
   }
 };
 
-class pepper {
-  Lilv::World lilv;
-  std::vector<std::unique_ptr<Mode>> plugins;
-  int index = -1;
-  Display braille;
-public:
-  pepper(BelaContext *bela)
-  : braille() {
-    braille.run();
-    lilv.load_all();
-    auto lv2plugins = lilv.get_all_plugins();
-    for (auto i = lv2plugins.begin(); !lv2plugins.is_end(i); i = lv2plugins.next(i)) {
-      auto lv2plugin = Lilv::Plugin(lv2plugins.get(i));
-      auto name = Lilv::Node(lv2plugin.get_name());
-      std::cout << "Seen " << name.as_string() << std::endl;
-      auto uri = Lilv::Node(lv2plugin.get_uri());
-      if (uri.is_uri() && strcmp(uri.as_string(), VocProc::uri) == 0) {
-        plugins.emplace_back(new VocProc(bela, lilv, lv2plugin));
-        std::cout << "Loaded " << name.as_string() << std::endl;
-      }
-    }
-    if (!this->plugins.empty()) index = 0;
-    for (auto &plugin: plugins) plugin->activate();
-  }
-  ~pepper() { for (auto &plugin: plugins) plugin->deactivate(); }
-  void run(BelaContext *bela) {
-    if (index >= 0 && index < plugins.size()) {
-      plugins[index]->run(bela);
+pepper::pepper(BelaContext *bela)
+: braille() {
+  braille.run();
+  lilv.load_all();
+  auto lv2plugins = lilv.get_all_plugins();
+  for (auto i = lv2plugins.begin(); !lv2plugins.is_end(i); i = lv2plugins.next(i)) {
+    auto lv2plugin = Lilv::Plugin(lv2plugins.get(i));
+    auto name = Lilv::Node(lv2plugin.get_name());
+    std::cout << "Seen " << name.as_string() << std::endl;
+    auto uri = Lilv::Node(lv2plugin.get_uri());
+    if (uri.is_uri() && strcmp(uri.as_string(), AnalogueOscillator::uri) == 0) {
+      plugins.emplace_back(new AnalogueOscillator(bela, lilv, lv2plugin));
+      std::cout << "Loaded " << name.as_string() << std::endl;
     }
   }
-};
+  if (!this->plugins.empty()) index = 0;
+  for (auto &plugin: plugins) plugin->activate();
+}
 
 // Bela
 
@@ -229,6 +226,7 @@ bool setup(BelaContext *context, void *userData) {
   for(unsigned int i = 0; i < nPins; ++i) {
     pinMode(context, 0, trigOutPins[i], OUTPUT);
     pinMode(context, 0, trigInPins[i], INPUT);
+    pinMode(context, 0, ledPins[i], OUTPUT);
   }
   p = std::unique_ptr<pepper>(new pepper(context));
   return bool(p);
