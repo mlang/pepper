@@ -1,27 +1,48 @@
 #include "AuxTask.h"
+#include "RTMutex.h"
+#include "RTPipe.h"
 #include <Bela.h>
 #include <DigitalChannelManager.h>
+#include <poll.h>
 #include <brlapi.h>
 #include <algorithm>
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <vector>
 #include <lilv/lilvmm.hpp>
 #include <lv2/lv2plug.in/ns/ext/buf-size/buf-size.h>
 
-constexpr int nPins = 4;
+struct AudioLevelMeterMessage {
+  float l, r;
+};
 
-constexpr int trigOutPins[nPins] = {0, 5, 12, 13};
-constexpr int trigInPins[nPins] = {15, 14, 1, 3};
-constexpr int sw1Pin = 6;
-constexpr int ledPins[nPins] = {2, 4, 8, 9};
-constexpr int pwmPin = 7;
-constexpr int gNumButtons = nPins;
+class Salt {
+protected:
+  static constexpr int nPins = 4;
 
-constexpr int buttonPins[gNumButtons] = {
-  sw1Pin, trigInPins[1], trigInPins[2], trigInPins[3]
+  static constexpr int trigOutPins[nPins] = { 0, 5, 12, 13 };
+  static constexpr int trigInPins[nPins] = { 15, 14, 1, 3 };
+  static constexpr int sw1Pin = 6;
+  static constexpr int ledPins[nPins] = { 2, 4, 8, 9 };
+  static constexpr int pwmPin = 7;
+  static constexpr int gNumButtons = nPins;
+
+  static constexpr int buttonPins[gNumButtons] = {
+    sw1Pin, trigInPins[1], trigInPins[2], trigInPins[3]
+  };
+
+public:
+  Salt(BelaContext *bela) {
+    pinMode(bela, 0, pwmPin, OUTPUT);
+    for(unsigned int i = 0; i < nPins; ++i) {
+      pinMode(bela, 0, trigOutPins[i], OUTPUT);
+      pinMode(bela, 0, trigInPins[i], INPUT);
+      pinMode(bela, 0, ledPins[i], OUTPUT);
+    }
+  }
 };
 
 class Display {
@@ -47,28 +68,18 @@ class Display {
   }
   int fd;
     
+  std::string previousText;
   void writeText(std::string text, int cursor = BRLAPI_CURSOR_OFF) {
-    if (connected) brlapi__writeText(handle(), cursor, text.data());
-  }
-  void doRun() {
-    while (!gShouldStop) {
-      fd_set rfds, efds;
-      struct timeval tv;
-      FD_ZERO(&rfds);
-      FD_ZERO(&efds);
-      FD_SET(fd, &rfds);
-      FD_SET(fd, &efds);
-      tv.tv_sec = 0;
-      tv.tv_usec = 10000;
-      if (select(fd+1, &rfds, nullptr, &efds, &tv) > 0) {
-        brlapi_keyCode_t keyCode;
-        while (brlapi__readKey(handle(), 0, &keyCode) == 1) {
-          keyPressed(keyCode);
-        }
+    if (connected) {
+      if (text != previousText) {
+	brlapi__writeText(handle(), cursor, text.data());
+	previousText = text;
       }
     }
   }
-  void keyPressed(brlapi_keyCode_t &keyCode) {
+  RTPipe update;
+  void doPoll();
+  void keyPressed(brlapi_keyCode_t keyCode) {
     std::stringstream str;
     str << keyCode;
     writeText(str.str());
@@ -77,7 +88,8 @@ public:
   Display()
   : brlapiHandle(new char[brlapi_getHandleSize()])
   , connected(connect())
-  , run("brlapi-run", &Display::doRun, this) {
+  , update("update-display")
+  , poll("brlapi-poll", &Display::doPoll, this) {
     if (connected) writeText("Welcome!");
   }
   ~Display() {
@@ -86,7 +98,7 @@ public:
       brlapi__closeConnection(handle());
     }
   }
-  AuxTask<NonRT, decltype(&Display::doRun)> run;
+  AuxTask<NonRT, decltype(&Display::doPoll)> poll;
 };
 
 static LV2_Feature hardRTCapable = { LV2_CORE__hardRTCapable, NULL };
@@ -98,9 +110,44 @@ LV2_Feature* features[3] = {
   &hardRTCapable, &buf_size_features[0], nullptr
 };
 
-class Mode {
+class Mode;
+
+class Pepper : Salt {
+  Lilv::World lilv;
+  std::vector<std::unique_ptr<Mode>> plugins;
+  int index = -1;
+  RTMutex index_mutex;
+  Display braille;
+  DigitalChannelManager digital;
+  static void digitalChanged(bool state, unsigned int frame, void *data) {
+    if (state) {
+      static_cast<Pepper *>(data)->nextPlugin();
+    }
+  }
+  void nextPlugin() {
+    std::lock_guard<decltype(index_mutex)> lock(index_mutex);
+    index = (index + 1) % plugins.size();
+  }
 public:
-  Mode() = default;
+  Pepper(BelaContext *);
+  ~Pepper();
+  void render(BelaContext *);
+};
+
+static inline float const *audioInChannel(BelaContext *bela, unsigned int channel) {
+  return &bela->audioIn[channel * bela->audioFrames];
+}
+
+template<unsigned int channel> static inline float *
+audioOutChannel(BelaContext *bela) {
+  return &bela->audioOut[channel * bela->audioFrames];
+}
+
+class Mode {
+protected:
+  Pepper &parent;
+public:
+  Mode(Pepper &parent) : parent(parent) {}
   virtual ~Mode() = default;
 
   virtual void activate() = 0;
@@ -108,40 +155,19 @@ public:
   virtual void deactivate() = 0;
 };
 
-class pepper {
-  Lilv::World lilv;
-  std::vector<std::unique_ptr<Mode>> plugins;
-  int index = -1;
-  Display braille;
-  DigitalChannelManager digital;
-  static void digitalChanged(bool state, unsigned int frame, void *data) {
-    if (state) {
-      auto instance = static_cast<pepper *>(data);
-      instance->index = (instance->index + 1) % instance->plugins.size();
-    }
-  }
-public:
-  pepper(BelaContext *bela);
-  ~pepper() { for (auto &plugin: plugins) plugin->deactivate(); }
-  void run(BelaContext *bela) {
-    digital.processInput(bela->digital, bela->digitalFrames);
-    if (index >= 0 && index < plugins.size()) {
-      plugins[index]->run(bela);
-    }
-  }
-};
-
 class LV2Plugin : public Mode {
 protected:
   Lilv::Instance *instance;
   std::vector<float> minValue, maxValue, defValue, value;
 public:
-  LV2Plugin(BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
-  : Mode(), instance(Lilv::Instance::create(p, bela->audioSampleRate, features)) {
+  LV2Plugin(Pepper &parent, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
+  : Mode(parent)
+  , instance(Lilv::Instance::create(p, bela->audioSampleRate, features)) {
     static LilvNode *lv2_core__sampleRate = lilv.new_uri(LV2_CORE__sampleRate);
     auto const count = p.get_num_ports();
     minValue.resize(count); maxValue.resize(count); defValue.resize(count);
-    p.get_port_ranges_float(&minValue.front(), &maxValue.front(), &defValue.front());
+    p.get_port_ranges_float(&minValue.front(), &maxValue.front(),
+			    &defValue.front());
     for (int i = 0; i < count; i++) {
       if (p.get_port_by_index(i).has_property(lv2_core__sampleRate)) {
         minValue[i] *= bela->audioSampleRate;
@@ -163,7 +189,8 @@ protected:
     connectAudio(bela, lv2PortIndex, channel, bela->audioOut);
   }
 private:
-  void connectAudio(BelaContext *bela, unsigned lv2PortIndex, unsigned channel, float *buffer) {
+  void connectAudio(BelaContext *bela,
+		    unsigned lv2PortIndex, unsigned channel, float *buffer) {
     instance->connect_port(lv2PortIndex, &buffer[bela->audioFrames * channel]);
   }
 };
@@ -171,8 +198,9 @@ private:
 class AnalogueOscillator final : public LV2Plugin {
 public:
   static constexpr const char *uri = "http://plugin.org.uk/swh-plugins/analogueOsc";
-  AnalogueOscillator(BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
-  : LV2Plugin(bela, lilv, p) {
+  AnalogueOscillator
+  (Pepper &parent, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
+  : LV2Plugin(parent, bela, lilv, p) {
     auto const count = p.get_num_ports();
     for (int i = 0; i < count; i++) {
       switch (i) {
@@ -194,16 +222,15 @@ public:
     instance->run(bela->audioFrames);
 
     // Duplicate output to both channels
-    std::copy_n(&bela->audioOut[0 * bela->audioFrames], bela->audioFrames,
-                &bela->audioOut[1 * bela->audioFrames]);
+    std::copy_n(audioOutChannel<0>(bela), bela->audioFrames, audioOutChannel<1>(bela));
   }
 };
 
 class FMOscillator final : public LV2Plugin {
 public:
   static constexpr const char *uri = "http://plugin.org.uk/swh-plugins/fmOsc";
-  FMOscillator(BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
-  : LV2Plugin(bela, lilv, p) {
+  FMOscillator(Pepper &parent, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
+  : LV2Plugin(parent, bela, lilv, p) {
     auto const count = p.get_num_ports();
     for (int i = 0; i < count; i++) {
       switch (i) {
@@ -225,17 +252,41 @@ public:
     instance->run(bela->audioFrames);
 
     // Duplicate output to both channels
-    std::copy_n(&bela->audioOut[0 * bela->audioFrames], bela->audioFrames,
-                &bela->audioOut[1 * bela->audioFrames]);
+    std::copy_n(audioOutChannel<0>(bela), bela->audioFrames,
+                audioOutChannel<1>(bela));
   }
 };
 
-pepper::pepper(BelaContext *bela)
-: braille() {
-  braille.run();
+class Biquad {
+  double B0, B1, B2, A1, A2;
+  double X[2], Y[2];
+public:
+  Biquad()
+  : B0(0.99949640), B1(-1.99899280), B2(B0), A1(-1.99899254), A2(0.99899305)
+  , X{0, 0}, Y{0, 0}
+  {}
+  double operator()(double in) {
+    float out = B0 * in + B1 * X[0] + B2 * X[1] - A1 * Y[0] - A2 * Y[1];
+
+    X[1] = X[0];
+    X[0] = in;
+    Y[1] = Y[0];
+    Y[0] = out;
+    return out;
+  }
+};
+
+// Implementation
+
+Pepper::Pepper(BelaContext *bela)
+: Salt(bela)
+, index_mutex("index-mutex")
+, braille()
+{
+  braille.poll();
   digital.setCallback(digitalChanged);
-  digital.setCallbackArgument(trigInPins[3], this);
-  digital.manage(trigInPins[3], INPUT, true);
+  digital.setCallbackArgument(buttonPins[3], this);
+  digital.manage(buttonPins[3], INPUT, true);
   lilv.load_all();
   auto lv2plugins = lilv.get_all_plugins();
   for (auto i = lv2plugins.begin(); !lv2plugins.is_end(i); i = lv2plugins.next(i)) {
@@ -243,10 +294,10 @@ pepper::pepper(BelaContext *bela)
     auto name = Lilv::Node(lv2plugin.get_name());
     auto uri = Lilv::Node(lv2plugin.get_uri());
     if (uri.is_uri() && strcmp(uri.as_string(), AnalogueOscillator::uri) == 0) {
-      plugins.emplace_back(new AnalogueOscillator(bela, lilv, lv2plugin));
+      plugins.emplace_back(new AnalogueOscillator(*this, bela, lilv, lv2plugin));
       std::cout << "Loaded " << name.as_string() << std::endl;
     } else if (uri.is_uri() && strcmp(uri.as_string(), FMOscillator::uri) == 0) {
-      plugins.emplace_back(new FMOscillator(bela, lilv, lv2plugin));
+      plugins.emplace_back(new FMOscillator(*this, bela, lilv, lv2plugin));
       std::cout << "Loaded " << name.as_string() << std::endl;
     }
   }
@@ -254,33 +305,80 @@ pepper::pepper(BelaContext *bela)
   for (auto &plugin: plugins) plugin->activate();
 }
 
+void Display::doPoll() {
+  pollfd fds[] = {
+    { fd, POLLIN, 0 },
+    { update.open(), POLLIN, 0 }
+  };
+
+  while (!gShouldStop) {
+    int ret = ::poll(fds, std::distance(std::begin(fds), std::end(fds)),
+		     std::chrono::milliseconds(10).count());
+    if (ret < 0) {
+      perror("poll");
+      break;
+    }
+
+    if (ret == 0) continue;
+
+    for (auto const &item: fds) {
+      if (!(item.revents & POLLIN)) continue;
+
+      if (item.fd == fd) {
+	brlapi_keyCode_t keyCode;
+	while (brlapi__readKey(handle(), 0, &keyCode) == 1) {
+	  keyPressed(keyCode);
+	}
+      } else if (item.fd == update.fileDescriptor()) {
+	// read(update.fileDescriptor(), ...);
+      }
+    }
+  }
+}
+
+void Pepper::render(BelaContext *bela) {
+  digital.processInput(bela->digital, bela->digitalFrames);
+  auto plugin = [this]() -> Mode * {
+    std::lock_guard<decltype(index_mutex)> lock(index_mutex);
+    if (index >= 0 && index < plugins.size()) {
+      return plugins[index].get();
+    }
+    return nullptr;
+  }();
+  if (plugin) {
+    plugin->run(bela);
+  }
+}
+
+Pepper::~Pepper() {
+  for (auto &plugin: plugins) plugin->deactivate();
+}
+
 // Bela
 
-static std::unique_ptr<pepper> p;
+static std::unique_ptr<Pepper> p;
 
-void Bela_userSettings(BelaInitSettings *settings) {
+void Bela_userSettings(BelaInitSettings *settings)
+{
   settings->interleave = 0;
 }
 
-bool setup(BelaContext *context, void *userData) {
-  if ((context->flags & BELA_FLAG_INTERLEAVED) == BELA_FLAG_INTERLEAVED) {
+bool setup(BelaContext *bela, void *)
+{
+  if ((bela->flags & BELA_FLAG_INTERLEAVED) == BELA_FLAG_INTERLEAVED) {
     std::cerr << "This project only works in non-interleaved mode." << std::endl;
     return false;
   }
-  pinMode(context, 0, pwmPin, OUTPUT);
-  for(unsigned int i = 0; i < nPins; ++i) {
-    pinMode(context, 0, trigOutPins[i], OUTPUT);
-    pinMode(context, 0, trigInPins[i], INPUT);
-    pinMode(context, 0, ledPins[i], OUTPUT);
-  }
-  p = std::unique_ptr<pepper>(new pepper(context));
+  p = std::unique_ptr<Pepper>(new Pepper(bela));
   return bool(p);
 }
 
-void render(BelaContext *context, void *) {
-  p->run(context);
+void render(BelaContext *bela, void *)
+{
+  p->render(bela);
 }
 
-void cleanup(BelaContext *context, void *userData) {
+void cleanup(BelaContext *context, void *)
+{
   p = nullptr;
 }
