@@ -1,11 +1,12 @@
 #include "AuxTask.h"
-#include "RTMutex.h"
 #include "RTPipe.h"
+#include "RTQueue.h"
 #include <Bela.h>
 #include <DigitalChannelManager.h>
 #include <poll.h>
 #include <brlapi.h>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -15,8 +16,17 @@
 #include <lilv/lilvmm.hpp>
 #include <lv2/lv2plug.in/ns/ext/buf-size/buf-size.h>
 
-struct AudioLevelMeterMessage {
-  float l, r;
+enum class Command { NextPlugin };
+
+class Message {
+public:
+  struct Level { float l, lp, r, rp; };
+  enum class Type { Invalid, AudioLevel } kind;
+  union Payload {
+    Level level;
+  } payload;
+  Message() : kind{Type::Invalid} {}
+  explicit Message(Level const &level) : kind{Type::AudioLevel}, payload{level} {}
 };
 
 class Salt {
@@ -51,6 +61,7 @@ class Display {
     return reinterpret_cast<brlapi_handle_t *>(brlapiHandle.get());
   }
   bool connected = false;
+  int fd = -1;
   bool connect() {
     brlapi_settings_t settings = BRLAPI_SETTINGS_INITIALIZER;
     fd = brlapi__openConnection(handle(), &settings, &settings);
@@ -66,7 +77,6 @@ class Display {
     }
     return false;
   }
-  int fd;
     
   std::string previousText;
   void writeText(std::string text, int cursor = BRLAPI_CURSOR_OFF) {
@@ -77,18 +87,20 @@ class Display {
       }
     }
   }
-  RTPipe update;
+  RTPipe updatePipe;
   void doPoll();
   void keyPressed(brlapi_keyCode_t keyCode) {
     std::stringstream str;
     str << keyCode;
     writeText(str.str());
   }
+  void updated(Message::Level &) {
+  }
 public:
   Display()
   : brlapiHandle(new char[brlapi_getHandleSize()])
   , connected(connect())
-  , update("update-display")
+  , updatePipe("update-display", 0x10000)
   , poll("brlapi-poll", &Display::doPoll, this) {
     if (connected) writeText("Welcome!");
   }
@@ -99,15 +111,9 @@ public:
     }
   }
   AuxTask<NonRT, decltype(&Display::doPoll)> poll;
-};
-
-static LV2_Feature hardRTCapable = { LV2_CORE__hardRTCapable, NULL };
-static LV2_Feature buf_size_features[1] = {
-  { LV2_BUF_SIZE__fixedBlockLength, NULL },
-};
-
-LV2_Feature* features[3] = {
-  &hardRTCapable, &buf_size_features[0], nullptr
+  void write(Message const &msg) {
+    updatePipe.write(msg);
+  }
 };
 
 class Mode;
@@ -116,22 +122,33 @@ class Pepper : Salt {
   Lilv::World lilv;
   std::vector<std::unique_ptr<Mode>> plugins;
   int index = -1;
-  RTMutex index_mutex;
   Display braille;
   DigitalChannelManager digital;
-  static void digitalChanged(bool state, unsigned int frame, void *data) {
+  static void digitalChanged(bool state, unsigned int, void *data) {
     if (state) {
       static_cast<Pepper *>(data)->nextPlugin();
     }
   }
   void nextPlugin() {
-    std::lock_guard<decltype(index_mutex)> lock(index_mutex);
     index = (index + 1) % plugins.size();
+  }
+  RTQueue commandQueue;
+  void commandReceived(Command command) {
+    switch (command) {
+    case Command::NextPlugin:
+      nextPlugin();
+      break;
+    default:
+      fprintf(stderr, "Unknown command %d\n", static_cast<int>(command));
+    }
   }
 public:
   Pepper(BelaContext *);
   ~Pepper();
   void render(BelaContext *);
+  void sendCommand(Command const &cmd) {
+    commandQueue.send<Command>(cmd);
+  }
 };
 
 static inline float const *audioInChannel(BelaContext *bela, unsigned int channel) {
@@ -140,6 +157,10 @@ static inline float const *audioInChannel(BelaContext *bela, unsigned int channe
 
 template<unsigned int channel> static inline float *
 audioOutChannel(BelaContext *bela) {
+  return &bela->audioOut[channel * bela->audioFrames];
+}
+static inline float *
+audioOutChannel(BelaContext *bela, unsigned int channel) {
   return &bela->audioOut[channel * bela->audioFrames];
 }
 
@@ -155,6 +176,13 @@ public:
   virtual void deactivate() = 0;
 };
 
+static LV2_Feature hardRTCapable = { LV2_CORE__hardRTCapable, nullptr };
+static LV2_Feature fixedBlockSize = { LV2_BUF_SIZE__fixedBlockLength, nullptr };
+
+static LV2_Feature *features[3] = {
+  &hardRTCapable, &fixedBlockSize, nullptr
+};
+
 class LV2Plugin : public Mode {
 protected:
   Lilv::Instance *instance;
@@ -168,7 +196,7 @@ public:
     minValue.resize(count); maxValue.resize(count); defValue.resize(count);
     p.get_port_ranges_float(&minValue.front(), &maxValue.front(),
 			    &defValue.front());
-    for (int i = 0; i < count; i++) {
+    for (unsigned int i = 0; i < count; i++) {
       if (p.get_port_by_index(i).has_property(lv2_core__sampleRate)) {
         minValue[i] *= bela->audioSampleRate;
         maxValue[i] *= bela->audioSampleRate;
@@ -202,7 +230,7 @@ public:
   (Pepper &parent, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
   : LV2Plugin(parent, bela, lilv, p) {
     auto const count = p.get_num_ports();
-    for (int i = 0; i < count; i++) {
+    for (unsigned int i = 0; i < count; i++) {
       switch (i) {
       case 4:
         connectAudioOut(bela, 4, 0);
@@ -232,7 +260,7 @@ public:
   FMOscillator(Pepper &parent, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
   : LV2Plugin(parent, bela, lilv, p) {
     auto const count = p.get_num_ports();
-    for (int i = 0; i < count; i++) {
+    for (unsigned int i = 0; i < count; i++) {
       switch (i) {
       case 2:
         connectAudioOut(bela, i, 0);
@@ -276,17 +304,53 @@ public:
   }
 };
 
+class AudioLevelMeter : public Mode {
+  struct Channel {
+    Biquad dcblock;
+    float localLevel = 0, peakLevel = 0;
+    Channel() : dcblock() {}
+    void operator()(float sample) {
+      float const level = fabsf(dcblock(sample));
+      if (level > localLevel)
+	localLevel = level;
+      else
+	localLevel *= localDecayRate;
+      if (level > peakLevel)
+	peakLevel = level;
+      else
+	peakLevel *= peakDecayRate;
+    }
+  };
+  std::vector<Channel> data;
+  static constexpr float const localDecayRate = 0.99, peakDecayRate = 0.999;
+public:
+  AudioLevelMeter(Pepper &parent, BelaContext *bela)
+  : Mode(parent), data(bela->audioInChannels) {}
+  void activate() override {}
+  void deactivate() override {}
+  void run(BelaContext *bela) override {
+    for (unsigned int channel = 0; channel < bela->audioInChannels; ++channel) {
+      auto const samples = audioInChannel(bela, channel);
+      std::for_each(samples, samples + bela->audioFrames, data[channel]);
+      std::copy_n(samples, bela->audioFrames, audioOutChannel(bela, channel));
+    }
+  }
+};
+
 // Implementation
 
 Pepper::Pepper(BelaContext *bela)
 : Salt(bela)
-, index_mutex("index-mutex")
 , braille()
+, commandQueue("command-queue")
 {
   braille.poll();
   digital.setCallback(digitalChanged);
   digital.setCallbackArgument(buttonPins[3], this);
   digital.manage(buttonPins[3], INPUT, true);
+
+  plugins.emplace_back(new AudioLevelMeter(*this, bela));
+
   lilv.load_all();
   auto lv2plugins = lilv.get_all_plugins();
   for (auto i = lv2plugins.begin(); !lv2plugins.is_end(i); i = lv2plugins.next(i)) {
@@ -301,6 +365,7 @@ Pepper::Pepper(BelaContext *bela)
       std::cout << "Loaded " << name.as_string() << std::endl;
     }
   }
+
   if (!this->plugins.empty()) index = 0;
   for (auto &plugin: plugins) plugin->activate();
 }
@@ -308,7 +373,7 @@ Pepper::Pepper(BelaContext *bela)
 void Display::doPoll() {
   pollfd fds[] = {
     { fd, POLLIN, 0 },
-    { update.open(), POLLIN, 0 }
+    { updatePipe.open(), POLLIN, 0 }
   };
 
   while (!gShouldStop) {
@@ -329,25 +394,46 @@ void Display::doPoll() {
 	while (brlapi__readKey(handle(), 0, &keyCode) == 1) {
 	  keyPressed(keyCode);
 	}
-      } else if (item.fd == update.fileDescriptor()) {
-	// read(update.fileDescriptor(), ...);
+      } else if (item.fd == updatePipe.fileDescriptor()) {
+	Message msg;
+	read(updatePipe.fileDescriptor(), &msg, sizeof(Message));
+	switch (msg.kind) {
+	case Message::Type::AudioLevel:
+	  updated(msg.payload.level);
+	  break;
+	case Message::Type::Invalid:
+	default:
+	  std::cerr << "Invalid message received" << std::endl;
+	  break;
+	}
       }
     }
   }
 }
 
 void Pepper::render(BelaContext *bela) {
-  digital.processInput(bela->digital, bela->digitalFrames);
-  auto plugin = [this]() -> Mode * {
-    std::lock_guard<decltype(index_mutex)> lock(index_mutex);
-    if (index >= 0 && index < plugins.size()) {
-      return plugins[index].get();
+  {
+    void *buf;
+    ssize_t const size = commandQueue.receive(buf);
+    switch (size) {
+    case sizeof(Command): {
+      auto &cmd = *static_cast<Command *>(buf);
+      commandReceived(cmd);
+      cmd.~Command();
+      break;
     }
-    return nullptr;
-  }();
-  if (plugin) {
-    plugin->run(bela);
+    case -EWOULDBLOCK:
+    case -ETIMEDOUT:
+      break;
+    default:
+      rt_fprintf(stderr, "Error while receiving command with size %d\n", size);
+    }
+    if (size > 0) {
+      commandQueue.free(buf);
+    }
   }
+  digital.processInput(bela->digital, bela->digitalFrames);
+  plugins[index]->run(bela);
 }
 
 Pepper::~Pepper() {
@@ -369,7 +455,11 @@ bool setup(BelaContext *bela, void *)
     std::cerr << "This project only works in non-interleaved mode." << std::endl;
     return false;
   }
-  p = std::unique_ptr<Pepper>(new Pepper(bela));
+  try {
+    p = std::unique_ptr<Pepper>(new Pepper(bela));
+  } catch (std::exception &e) {
+    std::cerr << e.what() << std::endl;
+  }
   return bool(p);
 }
 
@@ -378,7 +468,7 @@ void render(BelaContext *bela, void *)
   p->render(bela);
 }
 
-void cleanup(BelaContext *context, void *)
+void cleanup(BelaContext *, void *)
 {
   p = nullptr;
 }

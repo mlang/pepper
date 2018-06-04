@@ -4,6 +4,8 @@
 #include <fcntl.h>
 #include <Bela.h> // rt_fprintf
 #include <native/pipe.h>
+#include <iostream>
+#include <system_error>
 
 class RTPipe {
   char const *name;
@@ -13,8 +15,7 @@ public:
   RTPipe(char const *name, size_t pool = 0) : name(name) {
     int ret = rt_pipe_create(&pipe, name, P_MINOR_AUTO, pool);
     if (ret < 0) {
-      std::cerr << "Failed to create pipe " << name << std::endl;
-      throw std::bad_alloc();
+      throw std::system_error(-ret, std::system_category(), name);
     }
   }
   ~RTPipe() {
@@ -27,14 +28,15 @@ public:
     path += name;
     fd = ::open(path.c_str(), O_RDWR);
     if (fd < 0) {
-      std::cerr << "Failed to open pipe " << name << std::endl;
-      throw std::bad_alloc();
+      throw std::system_error(errno, std::system_category(), path);
     }
     return fd;
   }
   int fileDescriptor() const { return fd; }
-  void write(void *buf, size_t size, int mode = P_NORMAL) {
-    int ret = rt_pipe_write(&pipe, buf, size, mode);
+  template<typename T> void write(T const &obj, int mode = P_NORMAL) {
+    static_assert(std::is_trivially_copyable<T>::value,
+		  "objects written to a pipe need to be trivially copyable");
+    int ret = rt_pipe_write(&pipe, &obj, sizeof(T), mode);
     if (ret < 0) {
       rt_fprintf(stderr, "Failed to write to pipe %s\n", name);
     }

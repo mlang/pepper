@@ -117,7 +117,7 @@ class AuxTask<NonRT, void (Class::*)()> : AuxTaskNonRT {
     function_type const member_function;
     Class * const instance;
   };
-  static void call(void *ptr, int size) {
+  static void call(void *ptr, int) {
     auto task = static_cast<storage *>(ptr);
     (task->instance->*task->member_function)();
   }
