@@ -340,13 +340,13 @@ public:
   }
 };
 
-class AnalogTrigger {
+class AnalogOut {
   unsigned int channel;
   unsigned int sampleRate;
   size_t offset = 0, length = 0;
   float level;
 public:
-  AnalogTrigger(BelaContext *bela, unsigned int channel)
+  AnalogOut(BelaContext *bela, unsigned int channel)
   : channel(channel), sampleRate(bela->analogSampleRate) {}
   template<typename Rep, typename Period>
   void set_for(unsigned int frame, float level,
@@ -371,23 +371,36 @@ public:
 };
 
 class Sequencer final : public Mode {
-  EdgeDetect<float> clockRising;
-  AnalogTrigger analogTrig1;
+  EdgeDetect<float> clockRising, resetRising;
+  unsigned int position = 0;
+  std::vector<int> pattern;
+  std::vector<AnalogOut> analogOut;
 public:
   Sequencer(Pepper &pepper, BelaContext *bela)
   : Mode(pepper)
-  , clockRising(0.2)
-  , analogTrig1(bela, 0)
-  {}
+  , clockRising(0.2), resetRising(0.2)
+  , pattern{1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 1}
+  , analogOut()
+  {
+    for (unsigned int channel = 0; channel < bela->analogOutChannels; ++channel) {
+      analogOut.emplace_back(bela, channel);
+    }
+  }
   void activate() override {}
   void deactivate() override {}
   void run(BelaContext *bela) override {
     for (unsigned int frame = 0; frame < bela->analogFrames; ++frame) {
+      if (resetRising(analogReadNI(bela, frame, 1))) {
+	position = 0;
+      }
       if (clockRising(analogReadNI(bela, frame, 0))) {
-	analogTrig1.set_for(frame, 0.5, 5ms);
+	if (pattern[position] == 1) {
+	  analogOut[0].set_for(frame, 0.5, 5ms);
+	}
+	position = (position + 1) % pattern.size();
       }
     }
-    analogTrig1.run(bela);
+    for (auto &channel: analogOut) channel.run(bela);
   }
 };
 
