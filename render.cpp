@@ -17,6 +17,8 @@
 #include <lilv/lilvmm.hpp>
 #include <lv2/lv2plug.in/ns/ext/buf-size/buf-size.h>
 
+using namespace std::literals::chrono_literals;
+
 enum class Command { NextPlugin };
 
 class Message {
@@ -338,20 +340,52 @@ public:
   }
 };
 
+class AnalogTrigger {
+  unsigned int channel;
+  unsigned int sampleRate;
+  size_t offset = 0, length = 0;
+  float level;
+public:
+  AnalogTrigger(BelaContext *bela, unsigned int channel)
+  : channel(channel), sampleRate(bela->analogSampleRate) {}
+  template<typename Rep, typename Period>
+  void set_for(unsigned int frame, float level,
+	       std::chrono::duration<Rep, Period> duration) {
+    this->offset = frame;
+    this->length = sampleRate * Period::num / Period::den * duration.count();
+    this->level = level;
+  }
+  void operator()(BelaContext *bela) {
+    auto const size = std::min(bela->analogFrames - offset, length);
+    auto * const samples = audioOutChannel(bela, channel);
+    auto * const begin = samples + offset;
+    auto * const end = begin + size;
+    std::fill(samples, begin, 0);
+    std::fill(begin, end, level);
+    length -= size;
+    std::fill(end, samples + bela->analogFrames, 0);
+    offset = 0;
+  }
+};
+
 class Sequencer final : public Mode {
   EdgeDetect<float> clockRising;
+  AnalogTrigger analogTrig1;
 public:
-  Sequencer(Pepper &pepper)
+  Sequencer(Pepper &pepper, BelaContext *bela)
   : Mode(pepper)
   , clockRising(0.2)
+  , analogTrig1(bela, 0)
   {}
   void activate() override {}
   void deactivate() override {}
   void run(BelaContext *bela) override {
     for (unsigned int frame = 0; frame < bela->analogFrames; ++frame) {
       if (clockRising(analogReadNI(bela, frame, 0))) {
+	analogTrig1.set_for(frame, 0.5, 5ms);
       }
     }
+    analogTrig1(bela);
   }
 };
 
@@ -367,7 +401,7 @@ Pepper::Pepper(BelaContext *bela)
   digital.setCallbackArgument(buttonPins[3], this);
   digital.manage(buttonPins[3], INPUT, true);
 
-  plugins.emplace_back(new Sequencer(*this));
+  plugins.emplace_back(new Sequencer(*this, bela));
   plugins.emplace_back(new AudioLevelMeter(*this, bela));
 
   lilv.load_all();
