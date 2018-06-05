@@ -352,18 +352,20 @@ public:
   void set_for(unsigned int frame, float level,
 	       std::chrono::duration<Rep, Period> duration) {
     this->offset = frame;
-    this->length = sampleRate * Period::num / Period::den * duration.count();
+    this->length = duration.count() * Period::num * sampleRate / Period::den;
     this->level = level;
   }
-  void operator()(BelaContext *bela) {
-    auto const size = std::min(bela->analogFrames - offset, length);
+  void run(BelaContext *bela) {
     auto * const samples = audioOutChannel(bela, channel);
     auto * const begin = samples + offset;
+    auto const size = std::min(bela->analogFrames - offset, length);
     auto * const end = begin + size;
+
     std::fill(samples, begin, 0);
     std::fill(begin, end, level);
-    length -= size;
     std::fill(end, samples + bela->analogFrames, 0);
+
+    length -= size;
     offset = 0;
   }
 };
@@ -385,7 +387,7 @@ public:
 	analogTrig1.set_for(frame, 0.5, 5ms);
       }
     }
-    analogTrig1(bela);
+    analogTrig1.run(bela);
   }
 };
 
