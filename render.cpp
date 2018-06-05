@@ -1,4 +1,5 @@
 #include "AuxTask.h"
+#include "EdgeDetect.h"
 #include "RTPipe.h"
 #include "RTQueue.h"
 #include <Bela.h>
