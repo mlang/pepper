@@ -338,6 +338,23 @@ public:
   }
 };
 
+class Sequencer final : public Mode {
+  EdgeDetect<float> clockRising;
+public:
+  Sequencer(Pepper &pepper)
+  : Mode(pepper)
+  , clockRising(0.2)
+  {}
+  void activate() override {}
+  void deactivate() override {}
+  void run(BelaContext *bela) override {
+    for (unsigned int frame = 0; frame < bela->analogFrames; ++frame) {
+      if (clockRising(analogReadNI(bela, frame, 0))) {
+      }
+    }
+  }
+};
+
 // Implementation
 
 Pepper::Pepper(BelaContext *bela)
@@ -350,6 +367,7 @@ Pepper::Pepper(BelaContext *bela)
   digital.setCallbackArgument(buttonPins[3], this);
   digital.manage(buttonPins[3], INPUT, true);
 
+  plugins.emplace_back(new Sequencer(*this));
   plugins.emplace_back(new AudioLevelMeter(*this, bela));
 
   lilv.load_all();
