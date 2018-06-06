@@ -3,7 +3,6 @@
 
 #include <fcntl.h>
 #include <Bela.h> // rt_fprintf
-#include <pthread.h>
 #include <xenomai_wraps.h>
 #include <iostream>
 #include <system_error>
