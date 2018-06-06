@@ -1,38 +1,39 @@
 #ifndef RTQUEUE_H_DEFINED
 #define RTQUEUE_H_DEFINED
 
-#include <native/queue.h>
 #include <iostream>
 
 class RTQueue {
-  RT_QUEUE queue;
+  char const *name;
+  mqd_t queue;
 public:
-  RTQueue(char const *name, size_t pool = 0x10000) {
-    int ret = rt_queue_create(&queue, name, pool, TM_INFINITE, Q_FIFO);
-    if (ret < 0) {
-      throw std::system_error(-ret, std::system_category(), name);
+  RTQueue(char const *name, size_t pool = 0x10000) : name(name) {
+    std::string qname = "/q_";
+    qname += name;
+    mq_attr attr;
+    attr.mq_maxmsg = 128;
+    attr.mq_msgsize = pool / attr.mq_maxmsg;
+    queue = __wrap_mq_open(qname.c_str(), O_CREAT | O_RDWR | O_NONBLOCK, 0644, &attr);
+    if (queue < 0) {
+      throw std::system_error(errno, std::system_category(), name);
     }
   }
-  ~RTQueue() { rt_queue_delete(&queue); }
-  void *alloc(size_t size) {
-    return rt_queue_alloc(&queue, size);
-  }
-  void free(void *buf) {
-    rt_queue_free(&queue, buf);
-  }
-  template<typename T, typename... Args> int send(Args&&... args) {
-    return rt_queue_send(&queue,
-      new (alloc(sizeof(T))) T(std::forward<Args>(args)...), sizeof(T),
-      Q_NORMAL
-    );
-  }
-  template<typename T> int write(T const &obj) {
+  ~RTQueue() { __wrap_mq_close(queue); }
+  template<typename T> void write(T const &obj) {
     static_assert(std::is_trivially_copyable<T>::value,
 		  "objects written to a queue need to be trivially copyable");
-    return rt_queue_write(&queue, &obj, sizeof(T), Q_NORMAL);
+    if (__wrap_mq_send(queue, (char*)&obj, sizeof(T), 0)) {
+      rt_fprintf(stderr, "Error while sending to queue %s: %s\n", name, strerror(errno));
+    }
   }
-  ssize_t receive(void *&buf) {
-    return rt_queue_receive(&queue, &buf, TM_NONBLOCK);
+  ssize_t receive(void *buf, size_t size) {
+    unsigned int prio;
+    ssize_t ret = __wrap_mq_receive(queue, (char *)buf, size, &prio);
+    if (ret < 0 && errno != EAGAIN) {
+      rt_fprintf(stderr, "Error while receiving from queue %s: %s\n",
+		 queue, strerror(errno));
+    }
+    return ret;
   }
 };
 

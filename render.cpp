@@ -150,7 +150,7 @@ public:
   ~Pepper();
   void render(BelaContext *);
   void sendCommand(Command const &cmd) {
-    commandQueue.send<Command>(cmd);
+    commandQueue.write(cmd);
   }
 };
 
@@ -481,23 +481,14 @@ void Display::doPoll() {
 
 void Pepper::render(BelaContext *bela) {
   {
-    void *buf;
-    ssize_t const size = commandQueue.receive(buf);
+
+    Command cmd;
+    ssize_t const size = commandQueue.receive(&cmd, sizeof(Command));
     switch (size) {
     case sizeof(Command): {
-      auto &cmd = *static_cast<Command *>(buf);
       commandReceived(cmd);
-      cmd.~Command();
       break;
     }
-    case -EWOULDBLOCK:
-    case -ETIMEDOUT:
-      break;
-    default:
-      rt_fprintf(stderr, "Error while receiving command with size %d\n", size);
-    }
-    if (size > 0) {
-      commandQueue.free(buf);
     }
   }
   digital.processInput(bela->digital, bela->digitalFrames);
