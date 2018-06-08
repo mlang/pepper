@@ -7,12 +7,12 @@ class RTQueue {
   char const *name;
   mqd_t queue;
 public:
-  RTQueue(char const *name, size_t pool = 0x10000) : name(name) {
+  RTQueue(char const *name, size_t msgSize) : name(name) {
     std::string qname = "/q_";
     qname += name;
     mq_attr attr;
     attr.mq_maxmsg = 128;
-    attr.mq_msgsize = pool / attr.mq_maxmsg;
+    attr.mq_msgsize = msgSize;
     queue = __wrap_mq_open(qname.c_str(), O_CREAT | O_RDWR | O_NONBLOCK, 0644, &attr);
     if (queue < 0) {
       throw std::system_error(errno, std::system_category(), name);
@@ -31,7 +31,7 @@ public:
     ssize_t ret = __wrap_mq_receive(queue, (char *)buf, size, &prio);
     if (ret < 0 && errno != EAGAIN) {
       rt_fprintf(stderr, "Error while receiving from queue %s: %s\n",
-		 queue, strerror(errno));
+		 name, strerror(errno));
     }
     return ret;
   }

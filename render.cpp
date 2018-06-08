@@ -19,8 +19,6 @@
 
 using namespace std::literals::chrono_literals;
 
-namespace {
-
 enum class Command { NextPlugin };
 
 class Message {
@@ -34,8 +32,6 @@ public:
   explicit Message(Level const &level) : kind{Type::AudioLevel}, payload{level} {}
 };
 
-class Salt {
-protected:
   static constexpr int nPins = 4;
 
   static constexpr int trigOutPins[nPins] = { 0, 5, 12, 13 };
@@ -49,6 +45,7 @@ protected:
     sw1Pin, trigInPins[1], trigInPins[2], trigInPins[3]
   };
 
+class Salt {
 public:
   Salt(BelaContext *bela) {
     pinMode(bela, 0, pwmPin, OUTPUT);
@@ -60,13 +57,15 @@ public:
   }
 };
 
+namespace {
+
 class Display {
   std::unique_ptr<char[]> brlapiHandle;
   brlapi_handle_t *handle() {
     return reinterpret_cast<brlapi_handle_t *>(brlapiHandle.get());
   }
-  bool connected = false;
   int fd = -1;
+  bool connected = false;
   bool connect() {
     brlapi_settings_t settings = BRLAPI_SETTINGS_INITIALIZER;
     fd = brlapi__openConnection(handle(), &settings, &settings);
@@ -315,7 +314,7 @@ class AudioLevelMeter : public Mode {
     float localLevel = 0, peakLevel = 0;
     Channel() : dcblock() {}
     void operator()(float sample) {
-      float const level = fabsf(dcblock(sample));
+      float const level = std::abs(dcblock(sample));
       if (level > localLevel)
 	localLevel = level;
       else
@@ -413,7 +412,7 @@ public:
 Pepper::Pepper(BelaContext *bela)
 : Salt(bela)
 , braille()
-, commandQueue("command-queue")
+, commandQueue("command-queue", sizeof(Command))
 {
   braille.poll();
   digital.setCallback(digitalChanged);
@@ -485,12 +484,15 @@ void Display::doPoll() {
 
 void Pepper::render(BelaContext *bela) {
   {
-    Command cmd;
-    ssize_t const size = commandQueue.receive(&cmd, sizeof(Command));
+    char buffer[16384];
+    ssize_t const size = commandQueue.receive(buffer, 16384);
     switch (size) {
-    case sizeof(Command):
+    case sizeof(Command): {
+      Command cmd;
+      memcpy(&cmd, buffer, sizeof(Command));
       commandReceived(cmd);
       break;
+    }
     default:
       break;
     }
