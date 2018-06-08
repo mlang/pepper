@@ -59,6 +59,8 @@ public:
 
 namespace {
 
+class Pepper;
+
 class Display {
   std::unique_ptr<char[]> brlapiHandle;
   brlapi_handle_t *handle() {
@@ -93,19 +95,18 @@ class Display {
   }
   RTPipe updatePipe;
   void doPoll();
-  void keyPressed(brlapi_keyCode_t keyCode) {
-    std::stringstream str;
-    str << keyCode;
-    writeText(str.str());
-  }
+  void keyPressed(brlapi_keyCode_t keyCode);
   void updated(Message::Level &) {
   }
+  Pepper &pepper;
 public:
-  Display()
+  Display(Pepper &pepper)
   : brlapiHandle(new char[brlapi_getHandleSize()])
   , connected(connect())
   , updatePipe("update-display", 0x10000)
-  , poll("brlapi-poll", &Display::doPoll, this) {
+  , pepper(pepper)
+  , poll("brlapi-poll", &Display::doPoll, this)
+  {
     if (connected) writeText("Welcome!");
   }
   ~Display() {
@@ -411,7 +412,7 @@ public:
 
 Pepper::Pepper(BelaContext *bela)
 : Salt(bela)
-, braille()
+, braille(*this)
 , commandQueue("command-queue", sizeof(Command))
 {
   braille.poll();
@@ -480,6 +481,28 @@ void Display::doPoll() {
       }
     }
   }
+}
+
+void Display::keyPressed(brlapi_keyCode_t keyCode) {
+  brlapi_expandedKeyCode_t key;
+  if (brlapi_expandKeyCode(keyCode, &key) == 0) {
+    switch (key.type) {
+    case BRLAPI_KEY_TYPE_CMD:
+      switch (key.command) {
+      case BRLAPI_KEY_CMD_FWINRT:
+	pepper.sendCommand(Command::NextPlugin);
+	break;
+      default:
+	break;
+      }
+      break;
+    default:
+      break;
+    }
+  }
+  std::stringstream str;
+  str << key.type << " " << key.command << " " << key.argument << " " << key.flags;
+  writeText(str.str());
 }
 
 void Pepper::render(BelaContext *bela) {
