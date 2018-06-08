@@ -19,6 +19,8 @@
 
 using namespace std::literals::chrono_literals;
 
+namespace {
+
 enum class Command { NextPlugin };
 
 class Message {
@@ -404,6 +406,8 @@ public:
   }
 };
 
+}
+
 // Implementation
 
 Pepper::Pepper(BelaContext *bela)
@@ -481,14 +485,14 @@ void Display::doPoll() {
 
 void Pepper::render(BelaContext *bela) {
   {
-
     Command cmd;
     ssize_t const size = commandQueue.receive(&cmd, sizeof(Command));
     switch (size) {
-    case sizeof(Command): {
+    case sizeof(Command):
       commandReceived(cmd);
       break;
-    }
+    default:
+      break;
     }
   }
   digital.processInput(bela->digital, bela->digitalFrames);
@@ -515,7 +519,7 @@ bool setup(BelaContext *bela, void *)
     return false;
   }
   try {
-    p = std::unique_ptr<Pepper>(new Pepper(bela));
+    p = std::make_unique<Pepper>(bela);
   } catch (std::exception &e) {
     std::cerr << e.what() << std::endl;
   }
