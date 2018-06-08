@@ -19,7 +19,7 @@
 
 using namespace std::literals::chrono_literals;
 
-enum class Command { NextPlugin };
+enum class Command { PrevPlugin, NextPlugin };
 
 class Message {
 public:
@@ -149,6 +149,14 @@ class Pepper : Salt {
     if (state) {
       static_cast<Pepper *>(data)->nextPlugin();
     }
+  }
+  void prevPlugin() {
+    if (index) {
+      index -= 1;
+    } else {
+      index = plugins.size() - 1;
+    }
+    modeChanged();
   }
   void nextPlugin() {
     index = (index + 1) % plugins.size();
@@ -460,6 +468,9 @@ Pepper::Pepper(BelaContext *bela)
 
 void Pepper::commandReceived(Command command) {
   switch (command) {
+  case Command::PrevPlugin:
+    prevPlugin();
+    break;
   case Command::NextPlugin:
     nextPlugin();
     break;
@@ -525,6 +536,9 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
     switch (key.type) {
     case BRLAPI_KEY_TYPE_CMD:
       switch (key.command) {
+      case BRLAPI_KEY_CMD_FWINLT:
+	pepper.sendCommand(Command::PrevPlugin);
+	break;
       case BRLAPI_KEY_CMD_FWINRT:
 	pepper.sendCommand(Command::NextPlugin);
 	break;
