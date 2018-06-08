@@ -97,24 +97,45 @@ class Display {
   void doPoll();
   void keyPressed(brlapi_keyCode_t keyCode);
   void updated(Message::Mode &mode) {
-    switch (mode) {
-    case Message::Mode::AnalogueOscillator:
-      writeText("AnalogueOsc");
-      break;
-    case Message::Mode::AudioLevelMeter:
-      writeText("metering...");
-      break;
-    case Message::Mode::FMOscillator:
-      writeText("FMOsc");
-      break;
-    case Message::Mode::Sequencer:
-      writeText("Sequencer");
-      break;
-    }
+    currentMode = mode;
+    tabs[static_cast<int>(mode)].draw(*this);
   }
-  void updated(Message::Level &) {
+  void updated(Message::Level const &level) {
+    tabs[static_cast<int>(Message::Mode::AudioLevelMeter)].updated(level);
   }
   Pepper &pepper;
+  class Tab {
+    std::string name;
+    std::vector<std::string> lines;
+    unsigned int x = 0, y = 0;
+  public:
+    Tab() : name("<unnamed>") {}
+    Tab(std::string name) : name(name) {}
+    void draw(Display &display) {
+      if (y == 0) {
+	display.writeText(name);
+      } else {
+	display.writeText(lines[y - 1]);
+      }
+    }
+    unsigned int line() const { return y; }
+    void updated(Message::Level const &level) {
+    }
+    void lineUp(Display &display) {
+      if (y > 0) {
+	y -= 1;
+	draw(display);
+      }
+    }
+    void lineDown(Display &display) {
+      if (y < lines.size()) {
+	y += 1;
+	draw(display);
+      }
+    }
+  };
+  std::vector<Tab> tabs;
+  Message::Mode currentMode = Message::Mode::Sequencer;
 public:
   Display(Pepper &pepper)
   : brlapiHandle(new char[brlapi_getHandleSize()])
@@ -123,6 +144,24 @@ public:
   , pepper(pepper)
   , poll("brlapi-poll", &Display::doPoll, this)
   {
+    auto const modes = static_cast<int>(Message::Mode::Sequencer) + 1;
+    tabs.resize(modes);
+    for (int i = 0; i < modes; ++i) {
+      switch (Message::Mode(i)) {
+      case Message::Mode::AnalogueOscillator:
+	tabs[i] = Tab("AnalogueOSC");
+	break;
+      case Message::Mode::AudioLevelMeter:
+	tabs[i] = Tab("metering...");
+	break;
+      case Message::Mode::FMOscillator:
+	tabs[i] = Tab("FM Oscillator");
+	break;
+      case Message::Mode::Sequencer:
+	tabs[i] = Tab("Sequencer");
+	break;
+      }
+    }
     if (connected) writeText("Welcome!");
   }
   ~Display() {
@@ -537,10 +576,20 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
     case BRLAPI_KEY_TYPE_CMD:
       switch (key.command) {
       case BRLAPI_KEY_CMD_FWINLT:
-	pepper.sendCommand(Command::PrevPlugin);
+	if (tabs[static_cast<int>(currentMode)].line() == 0) {
+	  pepper.sendCommand(Command::PrevPlugin);
+	}
 	break;
       case BRLAPI_KEY_CMD_FWINRT:
-	pepper.sendCommand(Command::NextPlugin);
+	if (tabs[static_cast<int>(currentMode)].line() == 0) {
+	  pepper.sendCommand(Command::NextPlugin);
+	}
+	break;
+      case BRLAPI_KEY_CMD_LNUP:
+	tabs[static_cast<int>(currentMode)].lineUp(*this);
+	break;
+      case BRLAPI_KEY_CMD_LNDN:
+	tabs[static_cast<int>(currentMode)].lineDown(*this);
 	break;
       default:
 	break;
