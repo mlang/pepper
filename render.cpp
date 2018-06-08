@@ -7,11 +7,11 @@
 #include <poll.h>
 #include <brlapi.h>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <iostream>
 #include <memory>
-#include <mutex>
 #include <sstream>
 #include <vector>
 #include <lilv/lilvmm.hpp>
@@ -24,12 +24,12 @@ enum class Command { NextPlugin };
 class Message {
 public:
   struct Level { float l, lp, r, rp; };
-  enum class Type { Invalid, AudioLevel } kind;
+  enum class Mode { AnalogueOscillator, FMOscillator, AudioLevelMeter, Sequencer };
+  enum class Type { Invalid, ModeChanged, AudioLevel } kind;
   union Payload {
+    Mode mode;
     Level level;
   } payload;
-  Message() : kind{Type::Invalid} {}
-  explicit Message(Level const &level) : kind{Type::AudioLevel}, payload{level} {}
 };
 
   static constexpr int nPins = 4;
@@ -96,6 +96,22 @@ class Display {
   RTPipe updatePipe;
   void doPoll();
   void keyPressed(brlapi_keyCode_t keyCode);
+  void updated(Message::Mode &mode) {
+    switch (mode) {
+    case Message::Mode::AnalogueOscillator:
+      writeText("AnalogueOsc");
+      break;
+    case Message::Mode::AudioLevelMeter:
+      writeText("metering...");
+      break;
+    case Message::Mode::FMOscillator:
+      writeText("FMOsc");
+      break;
+    case Message::Mode::Sequencer:
+      writeText("Sequencer");
+      break;
+    }
+  }
   void updated(Message::Level &) {
   }
   Pepper &pepper;
@@ -136,17 +152,11 @@ class Pepper : Salt {
   }
   void nextPlugin() {
     index = (index + 1) % plugins.size();
+    modeChanged();
   }
+  inline void modeChanged();
   RTQueue commandQueue;
-  void commandReceived(Command command) {
-    switch (command) {
-    case Command::NextPlugin:
-      nextPlugin();
-      break;
-    default:
-      fprintf(stderr, "Unknown command %d\n", static_cast<int>(command));
-    }
-  }
+  void commandReceived(Command command);
 public:
   Pepper(BelaContext *);
   ~Pepper();
@@ -176,6 +186,7 @@ public:
   Mode(Pepper &parent) : parent(parent) {}
   virtual ~Mode() = default;
 
+  virtual Message::Mode mode() const = 0;
   virtual void activate() = 0;
   virtual void run(BelaContext *bela) = 0;
   virtual void deactivate() = 0;
@@ -231,6 +242,7 @@ private:
 class AnalogueOscillator final : public LV2Plugin {
 public:
   static constexpr const char *uri = "http://plugin.org.uk/swh-plugins/analogueOsc";
+  Message::Mode mode() const override { return Message::Mode::AnalogueOscillator; }
   AnalogueOscillator
   (Pepper &parent, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
   : LV2Plugin(parent, bela, lilv, p) {
@@ -262,6 +274,7 @@ public:
 class FMOscillator final : public LV2Plugin {
 public:
   static constexpr const char *uri = "http://plugin.org.uk/swh-plugins/fmOsc";
+  Message::Mode mode() const override { return Message::Mode::FMOscillator; }
   FMOscillator(Pepper &parent, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
   : LV2Plugin(parent, bela, lilv, p) {
     auto const count = p.get_num_ports();
@@ -331,6 +344,7 @@ class AudioLevelMeter : public Mode {
 public:
   AudioLevelMeter(Pepper &parent, BelaContext *bela)
   : Mode(parent), data(bela->audioInChannels) {}
+  Message::Mode mode() const override { return Message::Mode::AudioLevelMeter; }
   void activate() override {}
   void deactivate() override {}
   void run(BelaContext *bela) override {
@@ -388,6 +402,7 @@ public:
       analogOut.emplace_back(bela, channel);
     }
   }
+  Message::Mode mode() const override { return Message::Mode::Sequencer; }
   void activate() override {}
   void deactivate() override {}
   void run(BelaContext *bela) override {
@@ -413,7 +428,7 @@ public:
 Pepper::Pepper(BelaContext *bela)
 : Salt(bela)
 , braille(*this)
-, commandQueue("command-queue", sizeof(Command))
+, commandQueue("command-queue", 128)
 {
   braille.poll();
   digital.setCallback(digitalChanged);
@@ -439,7 +454,25 @@ Pepper::Pepper(BelaContext *bela)
   }
 
   if (!this->plugins.empty()) index = 0;
+  modeChanged();
   for (auto &plugin: plugins) plugin->activate();
+}
+
+void Pepper::commandReceived(Command command) {
+  switch (command) {
+  case Command::NextPlugin:
+    nextPlugin();
+    break;
+  default:
+    fprintf(stderr, "Unknown command %d\n", static_cast<int>(command));
+  }
+}
+
+void Pepper::modeChanged() {
+  Message msg;
+  msg.kind = Message::Type::ModeChanged;
+  msg.payload.mode = plugins[index]->mode();
+  braille.write(msg);
 }
 
 void Display::doPoll() {
@@ -470,6 +503,9 @@ void Display::doPoll() {
 	Message msg;
 	read(updatePipe.fileDescriptor(), &msg, sizeof(Message));
 	switch (msg.kind) {
+	case Message::Type::ModeChanged:
+	  updated(msg.payload.mode);
+	  break;
 	case Message::Type::AudioLevel:
 	  updated(msg.payload.level);
 	  break;
@@ -507,12 +543,12 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
 
 void Pepper::render(BelaContext *bela) {
   {
-    char buffer[16384];
-    ssize_t const size = commandQueue.receive(buffer, 16384);
+    char buffer[128];
+    ssize_t const size = commandQueue.receive(buffer, 128);
     switch (size) {
     case sizeof(Command): {
       Command cmd;
-      memcpy(&cmd, buffer, sizeof(Command));
+      memcpy(&cmd, buffer, size);
       commandReceived(cmd);
       break;
     }
