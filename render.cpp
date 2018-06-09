@@ -2,6 +2,7 @@
 //
 // Distributed under the Boost Software License, Version 1.0.
 // (See accompanying file LICENSE or copy at http://boost.org/LICENSE_1_0.txt)
+//------------------------------------------------------------------------------//
 #include "AuxTask.h"
 #include "EdgeDetect.h"
 #include "RTPipe.h"
@@ -21,8 +22,9 @@
 #include <memory>
 #include <sstream>
 #include <vector>
+//-*--*---*----*-----*------*-------*--------*-------*------*-----*----*---*--*-//
 
-using namespace std::literals::chrono_literals;
+using namespace std::literals::chrono_literals; // ms
 
 namespace {
 
@@ -74,32 +76,20 @@ class Pepper;
 class Display {
   std::unique_ptr<char[]> brlapiHandle;
   brlapi_handle_t *handle() {
-    return reinterpret_cast<brlapi_handle_t *>(brlapiHandle.get());
+    return static_cast<brlapi_handle_t *>(
+      static_cast<void *>(brlapiHandle.get())
+    );
   }
   int fd = -1;
   bool connected = false;
-  bool connect() {
-    brlapi_settings_t settings = BRLAPI_SETTINGS_INITIALIZER;
-    fd = brlapi__openConnection(handle(), &settings, &settings);
-    if (fd != -1) {
-      unsigned int x, y;
-      brlapi__getDisplaySize(handle(), &x, &y);
-      auto tty = brlapi__enterTtyMode(handle(), 1, "");
-      if (tty != -1) {
-        return true;
-      }
+  bool connect();
 
-      brlapi__closeConnection(handle());
-    }
-    return false;
-  }
-    
   std::string previousText;
   void writeText(std::string text, int cursor = BRLAPI_CURSOR_OFF) {
     if (connected) {
       if (text != previousText) {
         brlapi__writeText(handle(), cursor, text.data());
-        previousText = text;
+        previousText = std::move(text);
       }
     }
   }
@@ -121,7 +111,10 @@ class Display {
     unsigned int x = 0, y = 0;
   public:
     Tab() : name("<unnamed>") {}
-    Tab(std::string name, size_t lines = 0) : name(name), lines(lines) {}
+    explicit Tab(std::string name, size_t lines = 0)
+    : name(std::move(name))
+    , lines(lines)
+    {}
     void draw(Display &display) {
       if (y == 0) {
         display.writeText(name);
@@ -136,8 +129,8 @@ class Display {
       lines[2] = "PeakL: " + std::to_string(level.lp);
       lines[3] = "PeakR: " + std::to_string(level.rp);
       for (int i = 0; i < 8; i++) {
-	lines[4+i] = "A" + std::to_string(i) + ": " +
-	  std::to_string(level.analog[i]);
+        lines[4+i] = "A" + std::to_string(i) + ": " +
+          std::to_string(level.analog[i]);
       }
     }
     void lineUp(Display &display) {
@@ -156,33 +149,7 @@ class Display {
   std::vector<Tab> tabs;
   ModeIdentifier currentMode = ModeIdentifier::Sequencer;
 public:
-  Display(Pepper &pepper)
-  : brlapiHandle(new char[brlapi_getHandleSize()])
-  , connected(connect())
-  , updatePipe("update-display", 0x10000)
-  , pepper(pepper)
-  , poll("brlapi-poll", &Display::doPoll, this)
-  {
-    auto const modes = static_cast<int>(ModeIdentifier::Sequencer) + 1;
-    tabs.resize(modes);
-    for (int i = 0; i < modes; ++i) {
-      switch (ModeIdentifier(i)) {
-      case ModeIdentifier::AnalogueOscillator:
-        tabs[i] = Tab("AnalogueOSC");
-        break;
-      case ModeIdentifier::AudioLevelMeter:
-        tabs[i] = Tab("metering...", 12);
-        break;
-      case ModeIdentifier::FMOscillator:
-        tabs[i] = Tab("FM Oscillator");
-        break;
-      case ModeIdentifier::Sequencer:
-        tabs[i] = Tab("Sequencer");
-        break;
-      }
-    }
-    if (connected) writeText("Welcome!");
-  }
+  explicit Display(Pepper &pepper);
   ~Display() {
     if (connected) {
       brlapi__leaveTtyMode(handle());
@@ -235,7 +202,7 @@ public:
   }
 };
 
-static inline float const *audioInChannel(BelaContext *bela, unsigned int channel) {
+inline float const *audioInChannel(BelaContext *bela, unsigned int channel) {
   return &bela->audioIn[channel * bela->audioFrames];
 }
 
@@ -243,7 +210,8 @@ template<unsigned int channel> static inline float *
 audioOutChannel(BelaContext *bela) {
   return &bela->audioOut[channel * bela->audioFrames];
 }
-static inline float *
+
+inline float *
 audioOutChannel(BelaContext *bela, unsigned int channel) {
   return &bela->audioOut[channel * bela->audioFrames];
 }
@@ -261,10 +229,10 @@ public:
   virtual void deactivate() = 0;
 };
 
-static LV2_Feature hardRTCapable = { LV2_CORE__hardRTCapable, nullptr };
-static LV2_Feature fixedBlockSize = { LV2_BUF_SIZE__fixedBlockLength, nullptr };
+LV2_Feature hardRTCapable = { LV2_CORE__hardRTCapable, nullptr };
+LV2_Feature fixedBlockSize = { LV2_BUF_SIZE__fixedBlockLength, nullptr };
 
-static LV2_Feature *features[3] = {
+LV2_Feature *features[3] = {
   &hardRTCapable, &fixedBlockSize, nullptr
 };
 
@@ -295,10 +263,13 @@ protected:
   void controlFromAnalog(unsigned p, float v) {
     value[p] = map(v, 0, 1, minValue[p], maxValue[p]);
   }
-  void connectAudioIn(BelaContext *bela, unsigned lv2PortIndex, unsigned channel) {
-    connectAudio(bela, lv2PortIndex, channel, const_cast<float *>(bela->audioIn));
+  void connectAudioIn(BelaContext *bela,
+		      unsigned lv2PortIndex, unsigned channel) {
+    connectAudio(bela, lv2PortIndex, channel,
+		 const_cast<float *>(bela->audioIn));
   }
-  void connectAudioOut(BelaContext *bela, unsigned lv2PortIndex, unsigned channel) {
+  void connectAudioOut(BelaContext *bela,
+		       unsigned lv2PortIndex, unsigned channel) {
     connectAudio(bela, lv2PortIndex, channel, bela->audioOut);
   }
 private:
@@ -310,7 +281,8 @@ private:
 
 class AnalogueOscillator final : public LV2Plugin {
 public:
-  static constexpr const char *uri = "http://plugin.org.uk/swh-plugins/analogueOsc";
+  static constexpr const char *uri =
+    "http://plugin.org.uk/swh-plugins/analogueOsc";
   ModeIdentifier mode() const override {
     return ModeIdentifier::AnalogueOscillator;
   }
@@ -338,7 +310,8 @@ public:
     instance->run(bela->audioFrames);
 
     // Duplicate output to both channels
-    std::copy_n(audioOutChannel<0>(bela), bela->audioFrames, audioOutChannel<1>(bela));
+    std::copy_n(audioOutChannel<0>(bela), bela->audioFrames,
+		audioOutChannel<1>(bela));
   }
 };
 
@@ -346,7 +319,8 @@ class FMOscillator final : public LV2Plugin {
 public:
   static constexpr const char *uri = "http://plugin.org.uk/swh-plugins/fmOsc";
   ModeIdentifier mode() const override { return ModeIdentifier::FMOscillator; }
-  FMOscillator(Pepper &pepper, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
+  FMOscillator
+  (Pepper &pepper, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
   : LV2Plugin(pepper, bela, lilv, p) {
     auto const count = p.get_num_ports();
     for (unsigned int i = 0; i < count; i++) {
@@ -397,7 +371,7 @@ class AudioLevelMeter : public Mode {
   struct Channel {
     Biquad dcblock;
     float localLevel = 0, peakLevel = 0;
-    Channel() : dcblock() {}
+
     void operator()(float sample) {
       float const level = std::abs(dcblock(sample));
       if (level > localLevel)
@@ -429,17 +403,17 @@ public:
     if (blockCount % 100 == 0) {
       Message msg {
         LevelsChanged {
- 	  data[0].localLevel, data[1].localLevel,
-	  data[0].peakLevel, data[1].peakLevel,
-	  { analogReadNI(bela, 0, 0)
-	  , analogReadNI(bela, 0, 1)
-	  , analogReadNI(bela, 0, 2)
-	  , analogReadNI(bela, 0, 3)
-  	  , analogReadNI(bela, 0, 4)
-	  , analogReadNI(bela, 0, 5)
-	  , analogReadNI(bela, 0, 6)
-	  , analogReadNI(bela, 0, 7)
-	  }
+          data[0].localLevel, data[1].localLevel,
+          data[0].peakLevel, data[1].peakLevel,
+          { analogReadNI(bela, 0, 0)
+          , analogReadNI(bela, 0, 1)
+          , analogReadNI(bela, 0, 2)
+          , analogReadNI(bela, 0, 3)
+          , analogReadNI(bela, 0, 4)
+          , analogReadNI(bela, 0, 5)
+          , analogReadNI(bela, 0, 6)
+          , analogReadNI(bela, 0, 7)
+          }
         }
       };
       pepper.updateDisplay(msg);
@@ -512,7 +486,7 @@ public:
   }
 };
 
-}
+} // anonymous namespace
 
 // Implementation
 
@@ -567,6 +541,50 @@ void Pepper::modeChanged() {
   braille.write(msg);
 }
 
+Display::Display(Pepper &pepper)
+: brlapiHandle(new char[brlapi_getHandleSize()])
+, connected(connect())
+, updatePipe("update-display", 0x10000)
+, pepper(pepper)
+, poll("brlapi-poll", &Display::doPoll, this)
+{
+  auto const modes = static_cast<int>(ModeIdentifier::Sequencer) + 1;
+  tabs.resize(modes);
+  for (int i = 0; i < modes; ++i) {
+    switch (ModeIdentifier(i)) {
+    case ModeIdentifier::AnalogueOscillator:
+      tabs[i] = Tab("AnalogueOSC");
+      break;
+    case ModeIdentifier::AudioLevelMeter:
+      tabs[i] = Tab("metering...", 12);
+      break;
+    case ModeIdentifier::FMOscillator:
+      tabs[i] = Tab("FM Oscillator");
+      break;
+    case ModeIdentifier::Sequencer:
+      tabs[i] = Tab("Sequencer");
+      break;
+    }
+  }
+  if (connected) writeText("Welcome!");
+}
+
+bool Display::connect() {
+  brlapi_settings_t settings = BRLAPI_SETTINGS_INITIALIZER;
+  fd = brlapi__openConnection(handle(), &settings, &settings);
+  if (fd != -1) {
+    unsigned int x, y;
+    brlapi__getDisplaySize(handle(), &x, &y);
+    auto tty = brlapi__enterTtyMode(handle(), 1, "");
+    if (tty != -1) {
+      return true;
+    }
+
+    brlapi__closeConnection(handle());
+  }
+  return false;
+}
+
 void Display::doPoll() {
   pollfd fds[] = {
     { fd, POLLIN, 0 },
@@ -594,9 +612,9 @@ void Display::doPoll() {
       } else if (item.fd == updatePipe.fileDescriptor()) {
         Message msg;
         if (read(updatePipe.fileDescriptor(), &msg, sizeof(Message)) ==
-	    sizeof(Message)) {
-	  mpark::visit([this](auto &content) { updated(content); }, msg);
-	}
+            sizeof(Message)) {
+          mpark::visit([this](auto &content) { updated(content); }, msg);
+        }
       }
     }
   }
