@@ -116,7 +116,7 @@ class Display {
     unsigned int x = 0, y = 0;
   public:
     Tab() : name("<unnamed>") {}
-    Tab(std::string name) : name(name) {}
+    Tab(std::string name, size_t lines = 0) : name(name), lines(lines) {}
     void draw(Display &display) {
       if (y == 0) {
         display.writeText(name);
@@ -126,6 +126,14 @@ class Display {
     }
     unsigned int line() const { return y; }
     void updated(LevelsChanged const &level) {
+      lines[0] = "L: " + std::to_string(level.l);
+      lines[1] = "R: " + std::to_string(level.r);
+      lines[2] = "PeakL: " + std::to_string(level.lp);
+      lines[3] = "PeakR: " + std::to_string(level.rp);
+      for (int i = 0; i < 8; i++) {
+	lines[4+i] = "A" + std::to_string(i) + ": " +
+	  std::to_string(level.analog[i]);
+      }
     }
     void lineUp(Display &display) {
       if (y > 0) {
@@ -158,7 +166,7 @@ public:
         tabs[i] = Tab("AnalogueOSC");
         break;
       case ModeIdentifier::AudioLevelMeter:
-        tabs[i] = Tab("metering...");
+        tabs[i] = Tab("metering...", 12);
         break;
       case ModeIdentifier::FMOscillator:
         tabs[i] = Tab("FM Oscillator");
@@ -217,6 +225,9 @@ public:
   void sendCommand(Command const &cmd) {
     commandQueue.write(cmd);
   }
+  void updateDisplay(Message const &msg) {
+    braille.write(msg);
+  }
 };
 
 static inline float const *audioInChannel(BelaContext *bela, unsigned int channel) {
@@ -234,9 +245,9 @@ audioOutChannel(BelaContext *bela, unsigned int channel) {
 
 class Mode {
 protected:
-  Pepper &parent;
+  Pepper &pepper;
 public:
-  Mode(Pepper &parent) : parent(parent) {}
+  Mode(Pepper &pepper) : pepper(pepper) {}
   virtual ~Mode() = default;
 
   virtual ModeIdentifier mode() const = 0;
@@ -257,8 +268,8 @@ protected:
   Lilv::Instance *instance;
   std::vector<float> minValue, maxValue, defValue, value;
 public:
-  LV2Plugin(Pepper &parent, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
-  : Mode(parent)
+  LV2Plugin(Pepper &pepper, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
+  : Mode(pepper)
   , instance(Lilv::Instance::create(p, bela->audioSampleRate, features)) {
     static LilvNode *lv2_core__sampleRate = lilv.new_uri(LV2_CORE__sampleRate);
     auto const count = p.get_num_ports();
@@ -299,8 +310,8 @@ public:
     return ModeIdentifier::AnalogueOscillator;
   }
   AnalogueOscillator
-  (Pepper &parent, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
-  : LV2Plugin(parent, bela, lilv, p) {
+  (Pepper &pepper, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
+  : LV2Plugin(pepper, bela, lilv, p) {
     auto const count = p.get_num_ports();
     for (unsigned int i = 0; i < count; i++) {
       switch (i) {
@@ -330,8 +341,8 @@ class FMOscillator final : public LV2Plugin {
 public:
   static constexpr const char *uri = "http://plugin.org.uk/swh-plugins/fmOsc";
   ModeIdentifier mode() const override { return ModeIdentifier::FMOscillator; }
-  FMOscillator(Pepper &parent, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
-  : LV2Plugin(parent, bela, lilv, p) {
+  FMOscillator(Pepper &pepper, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
+  : LV2Plugin(pepper, bela, lilv, p) {
     auto const count = p.get_num_ports();
     for (unsigned int i = 0; i < count; i++) {
       switch (i) {
@@ -397,8 +408,8 @@ class AudioLevelMeter : public Mode {
   std::vector<Channel> data;
   static constexpr float const localDecayRate = 0.99, peakDecayRate = 0.999;
 public:
-  AudioLevelMeter(Pepper &parent, BelaContext *bela)
-  : Mode(parent), data(bela->audioInChannels) {}
+  AudioLevelMeter(Pepper &pepper, BelaContext *bela)
+  : Mode(pepper), data(bela->audioInChannels) {}
   ModeIdentifier mode() const override { return ModeIdentifier::AudioLevelMeter; }
   void activate() override {}
   void deactivate() override {}
@@ -408,6 +419,22 @@ public:
       std::for_each(samples, samples + bela->audioFrames, data[channel]);
       std::copy_n(samples, bela->audioFrames, audioOutChannel(bela, channel));
     }
+    Message msg {
+      LevelsChanged {
+	data[0].localLevel, data[1].localLevel,
+	data[0].peakLevel, data[1].peakLevel,
+	{ analogReadNI(bela, 0, 0)
+	, analogReadNI(bela, 0, 1)
+	, analogReadNI(bela, 0, 2)
+	, analogReadNI(bela, 0, 3)
+	, analogReadNI(bela, 0, 4)
+	, analogReadNI(bela, 0, 5)
+	, analogReadNI(bela, 0, 6)
+	, analogReadNI(bela, 0, 7)
+	}
+      }
+    };
+    pepper.updateDisplay(msg);
   }
 };
 
