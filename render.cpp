@@ -24,6 +24,8 @@
 
 using namespace std::literals::chrono_literals;
 
+namespace {
+
 enum class Command { PrevPlugin, NextPlugin };
 
 enum class ModeIdentifier {
@@ -42,18 +44,18 @@ struct LevelsChanged {
 
 using Message = mpark::variant<ModeChanged, LevelsChanged>;
 
-  static constexpr int nPins = 4;
+constexpr int nPins = 4;
 
-  static constexpr int trigOutPins[nPins] = { 0, 5, 12, 13 };
-  static constexpr int trigInPins[nPins] = { 15, 14, 1, 3 };
-  static constexpr int sw1Pin = 6;
-  static constexpr int ledPins[nPins] = { 2, 4, 8, 9 };
-  static constexpr int pwmPin = 7;
-  static constexpr int gNumButtons = nPins;
+constexpr int trigOutPins[nPins] = { 0, 5, 12, 13 };
+constexpr int trigInPins[nPins] = { 15, 14, 1, 3 };
+constexpr int sw1Pin = 6;
+constexpr int ledPins[nPins] = { 2, 4, 8, 9 };
+constexpr int pwmPin = 7;
+constexpr int gNumButtons = nPins;
 
-  static constexpr int buttonPins[gNumButtons] = {
-    sw1Pin, trigInPins[1], trigInPins[2], trigInPins[3]
-  };
+constexpr int buttonPins[gNumButtons] = {
+  sw1Pin, trigInPins[1], trigInPins[2], trigInPins[3]
+};
 
 class Salt {
 public:
@@ -66,8 +68,6 @@ public:
     }
   }
 };
-
-namespace {
 
 class Pepper;
 
@@ -588,8 +588,10 @@ void Display::doPoll() {
         }
       } else if (item.fd == updatePipe.fileDescriptor()) {
         Message msg;
-        read(updatePipe.fileDescriptor(), &msg, sizeof(Message));
-        mpark::visit([this](auto &content) { updated(content); }, msg);
+        if (read(updatePipe.fileDescriptor(), &msg, sizeof(Message)) ==
+	    sizeof(Message)) {
+	  mpark::visit([this](auto &content) { updated(content); }, msg);
+	}
       }
     }
   }
@@ -605,18 +607,18 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
         if (tabs[static_cast<int>(currentMode)].line() == 0) {
           pepper.sendCommand(Command::PrevPlugin);
         }
-        break;
+        return;
       case BRLAPI_KEY_CMD_FWINRT:
         if (tabs[static_cast<int>(currentMode)].line() == 0) {
           pepper.sendCommand(Command::NextPlugin);
         }
-        break;
+        return;
       case BRLAPI_KEY_CMD_LNUP:
         tabs[static_cast<int>(currentMode)].lineUp(*this);
-        break;
+        return;
       case BRLAPI_KEY_CMD_LNDN:
         tabs[static_cast<int>(currentMode)].lineDown(*this);
-        break;
+        return;
       default:
         break;
       }
