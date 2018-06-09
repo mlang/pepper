@@ -2,10 +2,13 @@
 #include "EdgeDetect.h"
 #include "RTPipe.h"
 #include "RTQueue.h"
+#include "mpark_variant.h"
 #include <Bela.h>
 #include <DigitalChannelManager.h>
-#include <poll.h>
 #include <brlapi.h>
+#include <lilv/lilvmm.hpp>
+#include <lv2/lv2plug.in/ns/ext/buf-size/buf-size.h>
+#include <poll.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -14,23 +17,26 @@
 #include <memory>
 #include <sstream>
 #include <vector>
-#include <lilv/lilvmm.hpp>
-#include <lv2/lv2plug.in/ns/ext/buf-size/buf-size.h>
 
 using namespace std::literals::chrono_literals;
 
 enum class Command { PrevPlugin, NextPlugin };
 
-class Message {
-public:
-  struct Level { float l, lp, r, rp; };
-  enum class Mode { AnalogueOscillator, FMOscillator, AudioLevelMeter, Sequencer };
-  enum class Type { Invalid, ModeChanged, AudioLevel } kind;
-  union Payload {
-    Mode mode;
-    Level level;
-  } payload;
+enum class ModeIdentifier {
+  AnalogueOscillator, FMOscillator,
+  AudioLevelMeter, Sequencer
 };
+
+struct ModeChanged {
+  ModeIdentifier mode;
+};
+
+struct LevelsChanged {
+  float l, r, lp, rp;
+  float analog[8];
+};
+
+using Message = mpark::variant<ModeChanged, LevelsChanged>;
 
   static constexpr int nPins = 4;
 
@@ -88,20 +94,20 @@ class Display {
   void writeText(std::string text, int cursor = BRLAPI_CURSOR_OFF) {
     if (connected) {
       if (text != previousText) {
-	brlapi__writeText(handle(), cursor, text.data());
-	previousText = text;
+        brlapi__writeText(handle(), cursor, text.data());
+        previousText = text;
       }
     }
   }
   RTPipe updatePipe;
   void doPoll();
   void keyPressed(brlapi_keyCode_t keyCode);
-  void updated(Message::Mode &mode) {
-    currentMode = mode;
-    tabs[static_cast<int>(mode)].draw(*this);
+  void updated(ModeChanged changed) {
+    currentMode = changed.mode;
+    tabs[static_cast<int>(currentMode)].draw(*this);
   }
-  void updated(Message::Level const &level) {
-    tabs[static_cast<int>(Message::Mode::AudioLevelMeter)].updated(level);
+  void updated(LevelsChanged changed) {
+    tabs[static_cast<int>(ModeIdentifier::AudioLevelMeter)].updated(changed);
   }
   Pepper &pepper;
   class Tab {
@@ -113,29 +119,29 @@ class Display {
     Tab(std::string name) : name(name) {}
     void draw(Display &display) {
       if (y == 0) {
-	display.writeText(name);
+        display.writeText(name);
       } else {
-	display.writeText(lines[y - 1]);
+        display.writeText(lines[y - 1]);
       }
     }
     unsigned int line() const { return y; }
-    void updated(Message::Level const &level) {
+    void updated(LevelsChanged const &level) {
     }
     void lineUp(Display &display) {
       if (y > 0) {
-	y -= 1;
-	draw(display);
+        y -= 1;
+        draw(display);
       }
     }
     void lineDown(Display &display) {
       if (y < lines.size()) {
-	y += 1;
-	draw(display);
+        y += 1;
+        draw(display);
       }
     }
   };
   std::vector<Tab> tabs;
-  Message::Mode currentMode = Message::Mode::Sequencer;
+  ModeIdentifier currentMode = ModeIdentifier::Sequencer;
 public:
   Display(Pepper &pepper)
   : brlapiHandle(new char[brlapi_getHandleSize()])
@@ -144,22 +150,22 @@ public:
   , pepper(pepper)
   , poll("brlapi-poll", &Display::doPoll, this)
   {
-    auto const modes = static_cast<int>(Message::Mode::Sequencer) + 1;
+    auto const modes = static_cast<int>(ModeIdentifier::Sequencer) + 1;
     tabs.resize(modes);
     for (int i = 0; i < modes; ++i) {
-      switch (Message::Mode(i)) {
-      case Message::Mode::AnalogueOscillator:
-	tabs[i] = Tab("AnalogueOSC");
-	break;
-      case Message::Mode::AudioLevelMeter:
-	tabs[i] = Tab("metering...");
-	break;
-      case Message::Mode::FMOscillator:
-	tabs[i] = Tab("FM Oscillator");
-	break;
-      case Message::Mode::Sequencer:
-	tabs[i] = Tab("Sequencer");
-	break;
+      switch (ModeIdentifier(i)) {
+      case ModeIdentifier::AnalogueOscillator:
+        tabs[i] = Tab("AnalogueOSC");
+        break;
+      case ModeIdentifier::AudioLevelMeter:
+        tabs[i] = Tab("metering...");
+        break;
+      case ModeIdentifier::FMOscillator:
+        tabs[i] = Tab("FM Oscillator");
+        break;
+      case ModeIdentifier::Sequencer:
+        tabs[i] = Tab("Sequencer");
+        break;
       }
     }
     if (connected) writeText("Welcome!");
@@ -233,7 +239,7 @@ public:
   Mode(Pepper &parent) : parent(parent) {}
   virtual ~Mode() = default;
 
-  virtual Message::Mode mode() const = 0;
+  virtual ModeIdentifier mode() const = 0;
   virtual void activate() = 0;
   virtual void run(BelaContext *bela) = 0;
   virtual void deactivate() = 0;
@@ -258,7 +264,7 @@ public:
     auto const count = p.get_num_ports();
     minValue.resize(count); maxValue.resize(count); defValue.resize(count);
     p.get_port_ranges_float(&minValue.front(), &maxValue.front(),
-			    &defValue.front());
+                            &defValue.front());
     for (unsigned int i = 0; i < count; i++) {
       if (p.get_port_by_index(i).has_property(lv2_core__sampleRate)) {
         minValue[i] *= bela->audioSampleRate;
@@ -281,7 +287,7 @@ protected:
   }
 private:
   void connectAudio(BelaContext *bela,
-		    unsigned lv2PortIndex, unsigned channel, float *buffer) {
+                    unsigned lv2PortIndex, unsigned channel, float *buffer) {
     instance->connect_port(lv2PortIndex, &buffer[bela->audioFrames * channel]);
   }
 };
@@ -289,7 +295,9 @@ private:
 class AnalogueOscillator final : public LV2Plugin {
 public:
   static constexpr const char *uri = "http://plugin.org.uk/swh-plugins/analogueOsc";
-  Message::Mode mode() const override { return Message::Mode::AnalogueOscillator; }
+  ModeIdentifier mode() const override {
+    return ModeIdentifier::AnalogueOscillator;
+  }
   AnalogueOscillator
   (Pepper &parent, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
   : LV2Plugin(parent, bela, lilv, p) {
@@ -321,7 +329,7 @@ public:
 class FMOscillator final : public LV2Plugin {
 public:
   static constexpr const char *uri = "http://plugin.org.uk/swh-plugins/fmOsc";
-  Message::Mode mode() const override { return Message::Mode::FMOscillator; }
+  ModeIdentifier mode() const override { return ModeIdentifier::FMOscillator; }
   FMOscillator(Pepper &parent, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
   : LV2Plugin(parent, bela, lilv, p) {
     auto const count = p.get_num_ports();
@@ -377,13 +385,13 @@ class AudioLevelMeter : public Mode {
     void operator()(float sample) {
       float const level = std::abs(dcblock(sample));
       if (level > localLevel)
-	localLevel = level;
+        localLevel = level;
       else
-	localLevel *= localDecayRate;
+        localLevel *= localDecayRate;
       if (level > peakLevel)
-	peakLevel = level;
+        peakLevel = level;
       else
-	peakLevel *= peakDecayRate;
+        peakLevel *= peakDecayRate;
     }
   };
   std::vector<Channel> data;
@@ -391,7 +399,7 @@ class AudioLevelMeter : public Mode {
 public:
   AudioLevelMeter(Pepper &parent, BelaContext *bela)
   : Mode(parent), data(bela->audioInChannels) {}
-  Message::Mode mode() const override { return Message::Mode::AudioLevelMeter; }
+  ModeIdentifier mode() const override { return ModeIdentifier::AudioLevelMeter; }
   void activate() override {}
   void deactivate() override {}
   void run(BelaContext *bela) override {
@@ -413,7 +421,7 @@ public:
   : channel(channel), sampleRate(bela->analogSampleRate) {}
   template<typename Rep, typename Period>
   void set_for(unsigned int frame, float level,
-	       std::chrono::duration<Rep, Period> duration) {
+               std::chrono::duration<Rep, Period> duration) {
     this->offset = frame;
     this->length = duration.count() * Period::num * sampleRate / Period::den;
     this->level = level;
@@ -449,19 +457,19 @@ public:
       analogOut.emplace_back(bela, channel);
     }
   }
-  Message::Mode mode() const override { return Message::Mode::Sequencer; }
+  ModeIdentifier mode() const override { return ModeIdentifier::Sequencer; }
   void activate() override {}
   void deactivate() override {}
   void run(BelaContext *bela) override {
     for (unsigned int frame = 0; frame < bela->analogFrames; ++frame) {
       if (resetRising(analogReadNI(bela, frame, 1))) {
-	position = 0;
+        position = 0;
       }
       if (clockRising(analogReadNI(bela, frame, 0))) {
-	if (pattern[position] == 1) {
-	  analogOut[0].set_for(frame, 0.5, 5ms);
-	}
-	position = (position + 1) % pattern.size();
+        if (pattern[position] == 1) {
+          analogOut[0].set_for(frame, 0.5, 5ms);
+        }
+        position = (position + 1) % pattern.size();
       }
     }
     for (auto &channel: analogOut) channel.run(bela);
@@ -519,9 +527,7 @@ void Pepper::commandReceived(Command command) {
 }
 
 void Pepper::modeChanged() {
-  Message msg;
-  msg.kind = Message::Type::ModeChanged;
-  msg.payload.mode = plugins[index]->mode();
+  Message msg(ModeChanged { plugins[index]->mode() });
   braille.write(msg);
 }
 
@@ -533,7 +539,7 @@ void Display::doPoll() {
 
   while (!gShouldStop) {
     int ret = ::poll(fds, std::distance(std::begin(fds), std::end(fds)),
-		     std::chrono::milliseconds(10).count());
+                     std::chrono::milliseconds(10).count());
     if (ret < 0) {
       perror("poll");
       break;
@@ -545,25 +551,14 @@ void Display::doPoll() {
       if (!(item.revents & POLLIN)) continue;
 
       if (item.fd == fd) {
-	brlapi_keyCode_t keyCode;
-	while (brlapi__readKey(handle(), 0, &keyCode) == 1) {
-	  keyPressed(keyCode);
-	}
+        brlapi_keyCode_t keyCode;
+        while (brlapi__readKey(handle(), 0, &keyCode) == 1) {
+          keyPressed(keyCode);
+        }
       } else if (item.fd == updatePipe.fileDescriptor()) {
-	Message msg;
-	read(updatePipe.fileDescriptor(), &msg, sizeof(Message));
-	switch (msg.kind) {
-	case Message::Type::ModeChanged:
-	  updated(msg.payload.mode);
-	  break;
-	case Message::Type::AudioLevel:
-	  updated(msg.payload.level);
-	  break;
-	case Message::Type::Invalid:
-	default:
-	  std::cerr << "Invalid message received" << std::endl;
-	  break;
-	}
+        Message msg;
+        read(updatePipe.fileDescriptor(), &msg, sizeof(Message));
+        mpark::visit([this](auto &content) { updated(content); }, msg);
       }
     }
   }
@@ -576,23 +571,23 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
     case BRLAPI_KEY_TYPE_CMD:
       switch (key.command) {
       case BRLAPI_KEY_CMD_FWINLT:
-	if (tabs[static_cast<int>(currentMode)].line() == 0) {
-	  pepper.sendCommand(Command::PrevPlugin);
-	}
-	break;
+        if (tabs[static_cast<int>(currentMode)].line() == 0) {
+          pepper.sendCommand(Command::PrevPlugin);
+        }
+        break;
       case BRLAPI_KEY_CMD_FWINRT:
-	if (tabs[static_cast<int>(currentMode)].line() == 0) {
-	  pepper.sendCommand(Command::NextPlugin);
-	}
-	break;
+        if (tabs[static_cast<int>(currentMode)].line() == 0) {
+          pepper.sendCommand(Command::NextPlugin);
+        }
+        break;
       case BRLAPI_KEY_CMD_LNUP:
-	tabs[static_cast<int>(currentMode)].lineUp(*this);
-	break;
+        tabs[static_cast<int>(currentMode)].lineUp(*this);
+        break;
       case BRLAPI_KEY_CMD_LNDN:
-	tabs[static_cast<int>(currentMode)].lineDown(*this);
-	break;
+        tabs[static_cast<int>(currentMode)].lineDown(*this);
+        break;
       default:
-	break;
+        break;
       }
       break;
     default:
