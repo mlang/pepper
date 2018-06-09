@@ -112,6 +112,7 @@ class Display {
   }
   void updated(LevelsChanged changed) {
     tabs[static_cast<int>(ModeIdentifier::AudioLevelMeter)].updated(changed);
+    tabs[static_cast<int>(currentMode)].draw(*this);
   }
   Pepper &pepper;
   class Tab {
@@ -410,6 +411,7 @@ class AudioLevelMeter : public Mode {
     }
   };
   std::vector<Channel> data;
+  unsigned int blockCount = 0;
   static constexpr float const localDecayRate = 0.99, peakDecayRate = 0.999;
 public:
   AudioLevelMeter(Pepper &pepper, BelaContext *bela)
@@ -423,22 +425,25 @@ public:
       std::for_each(samples, samples + bela->audioFrames, data[channel]);
       std::copy_n(samples, bela->audioFrames, audioOutChannel(bela, channel));
     }
-    Message msg {
-      LevelsChanged {
-	data[0].localLevel, data[1].localLevel,
-	data[0].peakLevel, data[1].peakLevel,
-	{ analogReadNI(bela, 0, 0)
-	, analogReadNI(bela, 0, 1)
-	, analogReadNI(bela, 0, 2)
-	, analogReadNI(bela, 0, 3)
-	, analogReadNI(bela, 0, 4)
-	, analogReadNI(bela, 0, 5)
-	, analogReadNI(bela, 0, 6)
-	, analogReadNI(bela, 0, 7)
-	}
-      }
+    blockCount++;
+    if (blockCount % 100 == 0) {
+      Message msg {
+        LevelsChanged {
+ 	  data[0].localLevel, data[1].localLevel,
+	  data[0].peakLevel, data[1].peakLevel,
+	  { analogReadNI(bela, 0, 0)
+	  , analogReadNI(bela, 0, 1)
+	  , analogReadNI(bela, 0, 2)
+	  , analogReadNI(bela, 0, 3)
+  	  , analogReadNI(bela, 0, 4)
+	  , analogReadNI(bela, 0, 5)
+	  , analogReadNI(bela, 0, 6)
+	  , analogReadNI(bela, 0, 7)
+	  }
+        }
+      };
+      pepper.updateDisplay(msg);
     };
-    pepper.updateDisplay(msg);
   }
 };
 
