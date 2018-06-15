@@ -481,7 +481,7 @@ public:
       }
       if (clockRising(analogReadNI(bela, frame, 0))) {
         if (pattern[position] == 1) {
-          analogOut[0].set_for(frame, 0.5, 5ms);
+          analogOut[0].set_for(frame, 0.9, 1ms);
         }
         position = (position + 1) % pattern.size();
       }
