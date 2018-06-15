@@ -202,18 +202,24 @@ public:
   }
 };
 
-inline float const *audioInChannel(BelaContext *bela, unsigned int channel) {
+inline float const *audioIn(BelaContext *bela, unsigned int channel) {
   return &bela->audioIn[channel * bela->audioFrames];
 }
 
-template<unsigned int channel> static inline float *
-audioOutChannel(BelaContext *bela) {
+template<unsigned int channel> float *audioOut(BelaContext *bela) {
   return &bela->audioOut[channel * bela->audioFrames];
 }
 
-inline float *
-audioOutChannel(BelaContext *bela, unsigned int channel) {
+inline float *audioOut(BelaContext *bela, unsigned int channel) {
   return &bela->audioOut[channel * bela->audioFrames];
+}
+
+template<unsigned int channel> float *analogOut(BelaContext *bela) {
+  return &bela->analogOut[channel * bela->analogFrames];
+}
+
+inline float *analogOut(BelaContext *bela, unsigned int channel) {
+  return &bela->analogOut[channel * bela->analogFrames];
 }
 
 class Mode {
@@ -310,8 +316,7 @@ public:
     instance->run(bela->audioFrames);
 
     // Duplicate output to both channels
-    std::copy_n(audioOutChannel<0>(bela), bela->audioFrames,
-		audioOutChannel<1>(bela));
+    std::copy_n(audioOut<0>(bela), bela->audioFrames, audioOut<1>(bela));
   }
 };
 
@@ -343,8 +348,7 @@ public:
     instance->run(bela->audioFrames);
 
     // Duplicate output to both channels
-    std::copy_n(audioOutChannel<0>(bela), bela->audioFrames,
-                audioOutChannel<1>(bela));
+    std::copy_n(audioOut<0>(bela), bela->audioFrames, audioOut<1>(bela));
   }
 };
 
@@ -395,9 +399,9 @@ public:
   void deactivate() override {}
   void run(BelaContext *bela) override {
     for (unsigned int channel = 0; channel < bela->audioInChannels; ++channel) {
-      auto const samples = audioInChannel(bela, channel);
+      auto const samples = audioIn(bela, channel);
       std::for_each(samples, samples + bela->audioFrames, data[channel]);
-      std::copy_n(samples, bela->audioFrames, audioOutChannel(bela, channel));
+      std::copy_n(samples, bela->audioFrames, audioOut(bela, channel));
     }
     blockCount++;
     if (blockCount % 100 == 0) {
@@ -437,7 +441,7 @@ public:
     this->level = level;
   }
   void run(BelaContext *bela) {
-    auto * const samples = audioOutChannel(bela, channel);
+    auto * const samples = analogOut(bela, channel);
     auto * const begin = samples + offset;
     auto const size = std::min(bela->analogFrames - offset, length);
     auto * const end = begin + size;
