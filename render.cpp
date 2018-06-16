@@ -101,7 +101,7 @@ class Display {
   void doPoll();
   void keyPressed(brlapi_keyCode_t keyCode);
   void redraw() {
-    mpark::visit([this](auto tab) { tab.draw(*this); },
+    mpark::visit([this](auto &tab) { tab.draw(*this); },
     		   tabs[static_cast<int>(currentMode)]);
   }
   void updated(ModeChanged const &changed) {
@@ -499,7 +499,6 @@ public:
 class Clock {
   int offset = -1;
   int frames = -1;
-  float bpm = 0;
 public:
   void tick(unsigned int frame) {
     offset = frame;
@@ -509,7 +508,7 @@ public:
     if (offset != -1) {
       if (frames != -1) {
 	frames += offset;
-	bpm(60.0f / (static_cast<float>(frames) / static_cast<float>(bela->analogSampleRate)));
+	bpm(15.0f / (static_cast<float>(frames) / static_cast<float>(bela->analogSampleRate)));
       }
       frames = bela->analogFrames - offset;
       offset = -1;
@@ -701,23 +700,23 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
     case BRLAPI_KEY_TYPE_CMD:
       switch (key.command) {
       case BRLAPI_KEY_CMD_FWINLT:
-        if (mpark::visit([](auto tab) { return tab.line(); },
+        if (mpark::visit([](auto const &tab) { return tab.line(); },
 			 tabs[static_cast<int>(currentMode)]) == 0) {
           pepper.sendCommand(Command::PrevPlugin);
         }
         return;
       case BRLAPI_KEY_CMD_FWINRT:
-        if (mpark::visit([](auto tab) { return tab.line(); },
+        if (mpark::visit([](auto const &tab) { return tab.line(); },
 			 tabs[static_cast<int>(currentMode)]) == 0) {
           pepper.sendCommand(Command::NextPlugin);
         }
         return;
       case BRLAPI_KEY_CMD_LNUP:
-	mpark::visit([this](auto tab) { tab.lineUp(*this); },
+	mpark::visit([this](auto &tab) { tab.lineUp(*this); },
 		     tabs[static_cast<int>(currentMode)]);
         return;
       case BRLAPI_KEY_CMD_LNDN:
-	mpark::visit([this](auto tab) { return tab.lineDown(*this); },
+	mpark::visit([this](auto &tab) { return tab.lineDown(*this); },
 		     tabs[static_cast<int>(currentMode)]);
         return;
       default:
