@@ -15,6 +15,7 @@
 #include <lv2/lv2plug.in/ns/ext/buf-size/buf-size.h>
 #include <poll.h>
 #include <boost/hana/functional/overload.hpp>
+#include <boost/optional.hpp>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -49,7 +50,11 @@ struct TempoChanged {
   float bpm;
 };
     
-using Message = mpark::variant<ModeChanged, LevelsChanged, TempoChanged>;
+struct PositionChanged {
+  int position;
+};
+
+using Message = mpark::variant<ModeChanged, LevelsChanged, TempoChanged, PositionChanged>;
 
 constexpr int nPins = 4;
 
@@ -101,20 +106,18 @@ class Display {
   RTPipe updatePipe;
   void doPoll();
   void keyPressed(brlapi_keyCode_t keyCode);
-  void redraw() {
-    mpark::visit([this](auto &tab) { tab.draw(*this); },
-    		   tabs[static_cast<int>(currentMode)]);
-  }
   Pepper &pepper;
-  class Tab {
+  class TabBase {
     std::string name;
-  protected:
-    std::vector<std::string> lines;
-  private:
     unsigned int x = 0, y = 0;
+  protected:
+    struct LineInfo {
+      int cursor = BRLAPI_CURSOR_OFF;
+      std::string text;
+    };
+    std::vector<LineInfo> lines;
   public:
-    Tab() : name("<unnamed>") {}
-    explicit Tab(std::string name, size_t lines = 0)
+    explicit TabBase(std::string name, size_t lines = 0)
     : name(std::move(name))
     , lines(lines)
     {}
@@ -122,7 +125,7 @@ class Display {
       if (y == 0) {
         display.writeText(name);
       } else {
-        display.writeText(lines[y - 1]);
+        display.writeText(lines[y - 1].text, lines[y - 1].cursor);
       }
     }
     unsigned int line() const { return y; }
@@ -139,41 +142,62 @@ class Display {
       }
     }
   };
-  class AnalogueOscillatorTab : public Tab {
+  class AnalogueOscillatorTab : public TabBase {
   public:
-    AnalogueOscillatorTab() : Tab("AnalogueOsc") {}
+    AnalogueOscillatorTab() : TabBase("AnalogueOsc") {}
   };
-  class FMOscillatorTab : public Tab {
+  class FMOscillatorTab : public TabBase {
   public:
-    FMOscillatorTab() : Tab("FMOsc") {}
+    FMOscillatorTab() : TabBase("FMOsc") {}
   };
-  class LevelMeterTab : public Tab {
+  class LevelMeterTab : public TabBase {
   public:
-    LevelMeterTab() : Tab("metering...", 12) {}
+    LevelMeterTab() : TabBase("metering...", 12) {}
     void operator()(LevelsChanged const &level) {
-      lines[0] = "L: " + std::to_string(level.l);
-      lines[1] = "R: " + std::to_string(level.r);
-      lines[2] = "PeakL: " + std::to_string(level.lp);
-      lines[3] = "PeakR: " + std::to_string(level.rp);
+      lines[0].text = "L: " + std::to_string(level.l);
+      lines[1].text = "R: " + std::to_string(level.r);
+      lines[2].text = "PeakL: " + std::to_string(level.lp);
+      lines[3].text = "PeakR: " + std::to_string(level.rp);
       for (int i = 0; i < 8; i++) {
-        lines[4+i] = "A" + std::to_string(i) + ": " +
+        lines[4+i].text = "A" + std::to_string(i) + ": " +
           std::to_string(level.analog[i]);
       }
     }
   };
-  class SequencerTab : public Tab {
+  class SequencerTab : public TabBase {
   public:
-    SequencerTab() : Tab("Sequencer", 1) {}
-    void operator()(TempoChanged tempo) {
-      lines[0] = "BPM: " + std::to_string(tempo.bpm);
+    SequencerTab() : TabBase("Sequencer", 2) {}
+    void operator()(TempoChanged const &tempo) {
+      if (tempo.bpm == 0.0f) {
+	lines[0].text = "Not running";
+      } else {
+	lines[0].text = "BPM: " + std::to_string(std::round(tempo.bpm));
+      }
+    }
+    void operator()(PositionChanged const &changed) {
+      lines[1].cursor = changed.position;
     }
   };
-  using Tabs = mpark::variant<
+  using Tab = mpark::variant<
     AnalogueOscillatorTab, FMOscillatorTab,
     LevelMeterTab, SequencerTab
   >;
-  std::vector<Tabs> tabs;
+  std::vector<Tab> tabs;
   ModeIdentifier currentMode = ModeIdentifier::Sequencer;
+  Tab &currentTab() { return tabs[static_cast<int>(currentMode)]; }
+  void redraw() {
+    mpark::visit([this](auto &tab) { tab.draw(*this); }, currentTab());
+  }
+  LevelMeterTab &levelMeterTab() {
+    return mpark::get<LevelMeterTab>(
+      tabs[static_cast<int>(ModeIdentifier::AudioLevelMeter)]
+    );
+  }
+  SequencerTab &sequencerTab() {
+    return mpark::get<SequencerTab>(
+      tabs[static_cast<int>(ModeIdentifier::Sequencer)]
+    );
+  }
 public:
   explicit Display(Pepper &pepper);
   ~Display() {
@@ -238,6 +262,14 @@ template<unsigned int channel> float *audioOut(BelaContext *bela) {
 
 inline float *audioOut(BelaContext *bela, unsigned int channel) {
   return &bela->audioOut[channel * bela->audioFrames];
+}
+
+template<unsigned int channel> float const *analogIn(BelaContext *bela) {
+  return &bela->analogIn[channel * bela->analogFrames];
+}
+
+inline float const *analogIn(BelaContext *bela, unsigned int channel) {
+  return &bela->analogIn[channel * bela->analogFrames];
 }
 
 template<unsigned int channel> float *analogOut(BelaContext *bela) {
@@ -482,23 +514,29 @@ public:
 };
 
 class Clock {
-  int offset = -1;
-  int frames = -1;
+  boost::optional<int> offset;
+  boost::optional<int> length;
 public:
   void tick(unsigned int frame) {
-    offset = frame;
+    *offset = frame;
   }
   template<typename BPM>
   void run(BelaContext *bela, BPM bpm) {
-    if (offset != -1) {
-      if (frames != -1) {
-	frames += offset;
-	bpm(15.0f / (static_cast<float>(frames) / static_cast<float>(bela->analogSampleRate)));
+    if (offset) {
+      if (length) {
+	*length += *offset;
+	bpm(60.0f / (static_cast<float>(*length) / static_cast<float>(bela->analogSampleRate)) / 4.0f);
       }
-      frames = bela->analogFrames - offset;
-      offset = -1;
+      *length = bela->analogFrames - *offset;
+      offset = boost::none;
     } else {
-      frames += bela->analogFrames;
+      if (length) {
+	*length += bela->analogFrames;
+	if (*length > bela->analogSampleRate) {
+	  bpm(0.0f);
+	  length = boost::none;
+	}
+      }
     }
   }
 };
@@ -525,21 +563,21 @@ public:
   void deactivate() override {}
   void run(BelaContext *bela) override {
     for (unsigned int frame = 0; frame < bela->analogFrames; ++frame) {
-      if (resetRising(analogReadNI(bela, frame, 1))) {
+      if (resetRising(analogIn<1>(bela)[frame])) {
         position = 0;
       }
-      if (clockRising(analogReadNI(bela, frame, 0))) {
+      if (clockRising(analogIn<0>(bela)[frame])) {
 	clock.tick(frame);
         if (pattern[position] == 1) {
           analogOut[0].set_for(frame, 0.9, 1ms);
         }
+	pepper.updateDisplay(Message { PositionChanged { position } });
         position = (position + 1) % pattern.size();
       }
     }
     for (auto &channel: analogOut) channel.run(bela);
     clock.run(bela, [this](float bpm) {
-      Message msg { TempoChanged { bpm } };
-      pepper.updateDisplay(msg);
+      pepper.updateDisplay(Message { TempoChanged { bpm } });
     });
   }
 };
@@ -673,19 +711,10 @@ void Display::doPoll() {
             sizeof(Message)) {
           mpark::visit(
 	    boost::hana::overload(
-	      [this](ModeChanged const &changed) {
-		currentMode = changed.mode;
-	      },
-	      [this](LevelsChanged const &level) {
-		mpark::get<LevelMeterTab>
-		(tabs[static_cast<int>(ModeIdentifier::AudioLevelMeter)])
-		(level);
-	      },
-	      [this](TempoChanged const &tempo) {
-		mpark::get<SequencerTab>
-		(tabs[static_cast<int>(ModeIdentifier::Sequencer)])
-		(tempo);
-	      }),
+	      [this](ModeChanged const &changed) { currentMode = changed.mode; },
+	      [this](LevelsChanged const &level) { levelMeterTab()(level); },
+	      [this](TempoChanged const &tempo) { sequencerTab()(tempo); },
+	      [this](PositionChanged const &position) { sequencerTab()(position); }),
 	    msg);
 	  redraw();
         }
@@ -701,24 +730,23 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
     case BRLAPI_KEY_TYPE_CMD:
       switch (key.command) {
       case BRLAPI_KEY_CMD_FWINLT:
-        if (mpark::visit([](auto const &tab) { return tab.line(); },
-			 tabs[static_cast<int>(currentMode)]) == 0) {
+        if (mpark::visit([](auto const &tab) { return tab.line(); }, currentTab())
+	    == 0) {
           pepper.sendCommand(Command::PrevPlugin);
         }
         return;
       case BRLAPI_KEY_CMD_FWINRT:
-        if (mpark::visit([](auto const &tab) { return tab.line(); },
-			 tabs[static_cast<int>(currentMode)]) == 0) {
+        if (mpark::visit([](auto const &tab) { return tab.line(); }, currentTab())
+	    == 0) {
           pepper.sendCommand(Command::NextPlugin);
         }
         return;
       case BRLAPI_KEY_CMD_LNUP:
-	mpark::visit([this](auto &tab) { tab.lineUp(*this); },
-		     tabs[static_cast<int>(currentMode)]);
+	mpark::visit([this](auto &tab) { tab.lineUp(*this); }, currentTab());
         return;
       case BRLAPI_KEY_CMD_LNDN:
 	mpark::visit([this](auto &tab) { return tab.lineDown(*this); },
-		     tabs[static_cast<int>(currentMode)]);
+		     currentTab());
         return;
       default:
         break;
