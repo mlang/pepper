@@ -44,7 +44,11 @@ struct LevelsChanged {
   float analog[8];
 };
 
-using Message = mpark::variant<ModeChanged, LevelsChanged>;
+struct TempoChanged {
+  float bpm;
+};
+    
+using Message = mpark::variant<ModeChanged, LevelsChanged, TempoChanged>;
 
 constexpr int nPins = 4;
 
@@ -96,18 +100,32 @@ class Display {
   RTPipe updatePipe;
   void doPoll();
   void keyPressed(brlapi_keyCode_t keyCode);
-  void updated(ModeChanged changed) {
-    currentMode = changed.mode;
-    tabs[static_cast<int>(currentMode)].draw(*this);
+  void redraw() {
+    mpark::visit([this](auto tab) { tab.draw(*this); },
+    		   tabs[static_cast<int>(currentMode)]);
   }
-  void updated(LevelsChanged changed) {
-    tabs[static_cast<int>(ModeIdentifier::AudioLevelMeter)].updated(changed);
-    tabs[static_cast<int>(currentMode)].draw(*this);
+  void updated(ModeChanged const &changed) {
+    currentMode = changed.mode;
+    redraw();
+  }
+  void updated(LevelsChanged const &level) {
+    mpark::get<LevelMeterTab>
+    (tabs[static_cast<int>(ModeIdentifier::AudioLevelMeter)])
+    (level);
+    redraw();
+  }
+  void updated(TempoChanged const &tempo) {
+    mpark::get<SequencerTab>
+    (tabs[static_cast<int>(ModeIdentifier::Sequencer)])
+    (tempo);
+    redraw();
   }
   Pepper &pepper;
   class Tab {
     std::string name;
+  protected:
     std::vector<std::string> lines;
+  private:
     unsigned int x = 0, y = 0;
   public:
     Tab() : name("<unnamed>") {}
@@ -123,16 +141,6 @@ class Display {
       }
     }
     unsigned int line() const { return y; }
-    void updated(LevelsChanged const &level) {
-      lines[0] = "L: " + std::to_string(level.l);
-      lines[1] = "R: " + std::to_string(level.r);
-      lines[2] = "PeakL: " + std::to_string(level.lp);
-      lines[3] = "PeakR: " + std::to_string(level.rp);
-      for (int i = 0; i < 8; i++) {
-        lines[4+i] = "A" + std::to_string(i) + ": " +
-          std::to_string(level.analog[i]);
-      }
-    }
     void lineUp(Display &display) {
       if (y > 0) {
         y -= 1;
@@ -146,7 +154,40 @@ class Display {
       }
     }
   };
-  std::vector<Tab> tabs;
+  class AnalogueOscillatorTab : public Tab {
+  public:
+    AnalogueOscillatorTab() : Tab("AnalogueOsc") {}
+  };
+  class FMOscillatorTab : public Tab {
+  public:
+    FMOscillatorTab() : Tab("FMOsc") {}
+  };
+  class LevelMeterTab : public Tab {
+  public:
+    LevelMeterTab() : Tab("metering...", 12) {}
+    void operator()(LevelsChanged const &level) {
+      lines[0] = "L: " + std::to_string(level.l);
+      lines[1] = "R: " + std::to_string(level.r);
+      lines[2] = "PeakL: " + std::to_string(level.lp);
+      lines[3] = "PeakR: " + std::to_string(level.rp);
+      for (int i = 0; i < 8; i++) {
+        lines[4+i] = "A" + std::to_string(i) + ": " +
+          std::to_string(level.analog[i]);
+      }
+    }
+  };
+  class SequencerTab : public Tab {
+  public:
+    SequencerTab() : Tab("Sequencer", 1) {}
+    void operator()(TempoChanged tempo) {
+      lines[0] = "BPM: " + std::to_string(tempo.bpm);
+    }
+  };
+  using Tabs = mpark::variant<
+    AnalogueOscillatorTab, FMOscillatorTab,
+    LevelMeterTab, SequencerTab
+  >;
+  std::vector<Tabs> tabs;
   ModeIdentifier currentMode = ModeIdentifier::Sequencer;
 public:
   explicit Display(Pepper &pepper);
@@ -455,8 +496,32 @@ public:
   }
 };
 
+class Clock {
+  int offset = -1;
+  int frames = -1;
+  float bpm = 0;
+public:
+  void tick(unsigned int frame) {
+    offset = frame;
+  }
+  template<typename BPM>
+  void run(BelaContext *bela, BPM bpm) {
+    if (offset != -1) {
+      if (frames != -1) {
+	frames += offset;
+	bpm(60.0f / (static_cast<float>(frames) / static_cast<float>(bela->analogSampleRate)));
+      }
+      frames = bela->analogFrames - offset;
+      offset = -1;
+    } else {
+      frames += bela->analogFrames;
+    }
+  }
+};
+
 class Sequencer final : public Mode {
   EdgeDetect<float> clockRising, resetRising;
+  Clock clock;
   unsigned int position = 0;
   std::vector<int> pattern;
   std::vector<AnalogOut> analogOut;
@@ -480,6 +545,7 @@ public:
         position = 0;
       }
       if (clockRising(analogReadNI(bela, frame, 0))) {
+	clock.tick(frame);
         if (pattern[position] == 1) {
           analogOut[0].set_for(frame, 0.9, 1ms);
         }
@@ -487,6 +553,10 @@ public:
       }
     }
     for (auto &channel: analogOut) channel.run(bela);
+    clock.run(bela, [this](float bpm) {
+      Message msg { TempoChanged { bpm } };
+      pepper.updateDisplay(msg);
+    });
   }
 };
 
@@ -553,20 +623,20 @@ Display::Display(Pepper &pepper)
 , poll("brlapi-poll", &Display::doPoll, this)
 {
   auto const modes = static_cast<int>(ModeIdentifier::Sequencer) + 1;
-  tabs.resize(modes);
+  //tabs.resize(modes);
   for (int i = 0; i < modes; ++i) {
     switch (ModeIdentifier(i)) {
     case ModeIdentifier::AnalogueOscillator:
-      tabs[i] = Tab("AnalogueOSC");
+      tabs.push_back(AnalogueOscillatorTab{});
       break;
     case ModeIdentifier::AudioLevelMeter:
-      tabs[i] = Tab("metering...", 12);
+      tabs.push_back(LevelMeterTab{});
       break;
     case ModeIdentifier::FMOscillator:
-      tabs[i] = Tab("FM Oscillator");
+      tabs.push_back(FMOscillatorTab{});
       break;
     case ModeIdentifier::Sequencer:
-      tabs[i] = Tab("Sequencer");
+      tabs.push_back(SequencerTab{});
       break;
     }
   }
@@ -631,20 +701,24 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
     case BRLAPI_KEY_TYPE_CMD:
       switch (key.command) {
       case BRLAPI_KEY_CMD_FWINLT:
-        if (tabs[static_cast<int>(currentMode)].line() == 0) {
+        if (mpark::visit([](auto tab) { return tab.line(); },
+			 tabs[static_cast<int>(currentMode)]) == 0) {
           pepper.sendCommand(Command::PrevPlugin);
         }
         return;
       case BRLAPI_KEY_CMD_FWINRT:
-        if (tabs[static_cast<int>(currentMode)].line() == 0) {
+        if (mpark::visit([](auto tab) { return tab.line(); },
+			 tabs[static_cast<int>(currentMode)]) == 0) {
           pepper.sendCommand(Command::NextPlugin);
         }
         return;
       case BRLAPI_KEY_CMD_LNUP:
-        tabs[static_cast<int>(currentMode)].lineUp(*this);
+	mpark::visit([this](auto tab) { tab.lineUp(*this); },
+		     tabs[static_cast<int>(currentMode)]);
         return;
       case BRLAPI_KEY_CMD_LNDN:
-        tabs[static_cast<int>(currentMode)].lineDown(*this);
+	mpark::visit([this](auto tab) { return tab.lineDown(*this); },
+		     tabs[static_cast<int>(currentMode)]);
         return;
       default:
         break;
