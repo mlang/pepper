@@ -14,6 +14,7 @@
 #include <lilv/lilvmm.hpp>
 #include <lv2/lv2plug.in/ns/ext/buf-size/buf-size.h>
 #include <poll.h>
+#include <boost/hana/functional/overload.hpp>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -103,22 +104,6 @@ class Display {
   void redraw() {
     mpark::visit([this](auto &tab) { tab.draw(*this); },
     		   tabs[static_cast<int>(currentMode)]);
-  }
-  void updated(ModeChanged const &changed) {
-    currentMode = changed.mode;
-    redraw();
-  }
-  void updated(LevelsChanged const &level) {
-    mpark::get<LevelMeterTab>
-    (tabs[static_cast<int>(ModeIdentifier::AudioLevelMeter)])
-    (level);
-    redraw();
-  }
-  void updated(TempoChanged const &tempo) {
-    mpark::get<SequencerTab>
-    (tabs[static_cast<int>(ModeIdentifier::Sequencer)])
-    (tempo);
-    redraw();
   }
   Pepper &pepper;
   class Tab {
@@ -686,7 +671,23 @@ void Display::doPoll() {
         Message msg;
         if (read(updatePipe.fileDescriptor(), &msg, sizeof(Message)) ==
             sizeof(Message)) {
-          mpark::visit([this](auto &content) { updated(content); }, msg);
+          mpark::visit(
+	    boost::hana::overload(
+	      [this](ModeChanged const &changed) {
+		currentMode = changed.mode;
+	      },
+	      [this](LevelsChanged const &level) {
+		mpark::get<LevelMeterTab>
+		(tabs[static_cast<int>(ModeIdentifier::AudioLevelMeter)])
+		(level);
+	      },
+	      [this](TempoChanged const &tempo) {
+		mpark::get<SequencerTab>
+		(tabs[static_cast<int>(ModeIdentifier::Sequencer)])
+		(tempo);
+	      }),
+	    msg);
+	  redraw();
         }
       }
     }
