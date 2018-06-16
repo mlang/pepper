@@ -51,7 +51,7 @@ struct TempoChanged {
 };
     
 struct PositionChanged {
-  int position;
+  unsigned int position;
 };
 
 using Message = mpark::variant<ModeChanged, LevelsChanged, TempoChanged, PositionChanged>;
@@ -93,14 +93,10 @@ class Display {
   int fd = -1;
   bool connected = false;
   bool connect();
-
-  std::string previousText;
-  void writeText(std::string text, int cursor = BRLAPI_CURSOR_OFF) {
+  int width = 0;
+  void writeText(std::string text, int cursor) {
     if (connected) {
-      if (text != previousText) {
-        brlapi__writeText(handle(), cursor, text.data());
-        previousText = std::move(text);
-      }
+      brlapi__writeText(handle(), cursor > width? width: cursor, text.data());
     }
   }
   RTPipe updatePipe;
@@ -123,9 +119,10 @@ class Display {
     {}
     void draw(Display &display) {
       if (y == 0) {
-        display.writeText(name);
+        display.writeText(name, BRLAPI_CURSOR_OFF);
       } else {
-        display.writeText(lines[y - 1].text, lines[y - 1].cursor);
+        auto const &line = lines[y - 1];
+	display.writeText(line.text, line.cursor);
       }
     }
     unsigned int line() const { return y; }
@@ -145,10 +142,12 @@ class Display {
   class AnalogueOscillatorTab : public TabBase {
   public:
     AnalogueOscillatorTab() : TabBase("AnalogueOsc") {}
+    void click(int) {}
   };
   class FMOscillatorTab : public TabBase {
   public:
     FMOscillatorTab() : TabBase("FMOsc") {}
+    void click(int) {}
   };
   class LevelMeterTab : public TabBase {
   public:
@@ -163,6 +162,7 @@ class Display {
           std::to_string(level.analog[i]);
       }
     }
+    void click(int) {}
   };
   class SequencerTab : public TabBase {
   public:
@@ -171,12 +171,14 @@ class Display {
       if (tempo.bpm == 0.0f) {
 	lines[0].text = "Not running";
       } else {
-	lines[0].text = "BPM: " + std::to_string(std::round(tempo.bpm));
+	lines[0].text = "BPM: " + std::to_string(static_cast<int>(std::round(tempo.bpm)));
       }
     }
     void operator()(PositionChanged const &changed) {
-      lines[1].cursor = changed.position;
+      lines[1].cursor = changed.position + 1;
+      lines[1].text = std::string(changed.position, ' ') + '=';
     }
+    void click(int cell) { std::cout << "Click " << cell << std::endl; }
   };
   using Tab = mpark::variant<
     AnalogueOscillatorTab, FMOscillatorTab,
@@ -518,20 +520,20 @@ class Clock {
   boost::optional<int> length;
 public:
   void tick(unsigned int frame) {
-    *offset = frame;
+    offset = frame;
   }
   template<typename BPM>
   void run(BelaContext *bela, BPM bpm) {
     if (offset) {
       if (length) {
-	*length += *offset;
+	length = *length + *offset;
 	bpm(60.0f / (static_cast<float>(*length) / static_cast<float>(bela->analogSampleRate)) / 4.0f);
       }
-      *length = bela->analogFrames - *offset;
+      length = bela->analogFrames - *offset;
       offset = boost::none;
     } else {
       if (length) {
-	*length += bela->analogFrames;
+	length = *length + bela->analogFrames;
 	if (*length > bela->analogSampleRate) {
 	  bpm(0.0f);
 	  length = boost::none;
@@ -662,7 +664,7 @@ Display::Display(Pepper &pepper)
       break;
     }
   }
-  if (connected) writeText("Welcome!");
+  if (connected) writeText("Welcome!", BRLAPI_CURSOR_OFF);
 }
 
 bool Display::connect() {
@@ -671,6 +673,7 @@ bool Display::connect() {
   if (fd != -1) {
     unsigned int x, y;
     brlapi__getDisplaySize(handle(), &x, &y);
+    width = x;
     auto tty = brlapi__enterTtyMode(handle(), 1, "");
     if (tty != -1) {
       return true;
@@ -748,6 +751,9 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
 	mpark::visit([this](auto &tab) { return tab.lineDown(*this); },
 		     currentTab());
         return;
+      case BRLAPI_KEY_CMD_ROUTE:
+	mpark::visit([this, &key](auto &tab) { tab.click(key.argument); }, currentTab());
+	return;
       default:
         break;
       }
@@ -758,7 +764,7 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
   }
   std::stringstream str;
   str << key.type << " " << key.command << " " << key.argument << " " << key.flags;
-  writeText(str.str());
+  writeText(str.str(), BRLAPI_CURSOR_OFF);
 }
 
 void Pepper::render(BelaContext *bela) {
