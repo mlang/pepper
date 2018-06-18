@@ -1,7 +1,7 @@
-#ifndef EDGEDETECT_H
-#define EDGEDETECT_H
+#ifndef EDGEDETECT_H_DEFINED
+#define EDGEDETECT_H_DEFINED
 
-#include "EWMA.h"
+#include "DSP.h"
 
 template<typename T>
 class EdgeDetect {
@@ -21,4 +21,4 @@ public:
   }
 };
 
-#endif
+#endif // EDGEDETECT_H_DEFINED

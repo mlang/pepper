@@ -4,6 +4,7 @@
 // (See accompanying file LICENSE or copy at http://boost.org/LICENSE_1_0.txt)
 //------------------------------------------------------------------------------//
 #include "AuxTask.h"
+#include "DSP.h"
 #include "EdgeDetect.h"
 #include "RTPipe.h"
 #include "RTQueue.h"
@@ -30,12 +31,20 @@ using namespace std::literals::chrono_literals; // ms
 
 namespace {
 
-enum class Command { PrevPlugin, NextPlugin };
-
 enum class ModeIdentifier {
   AnalogueOscillator, FMOscillator,
   AudioLevelMeter, Sequencer
 };
+
+class Pattern {
+  std::vector<int> data;
+public:
+  Pattern() : data{1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 1} {}
+};
+
+enum class Command { PrevPlugin, NextPlugin };
+
+using Request = mpark::variant<Command>;
 
 struct ModeChanged {
   ModeIdentifier mode;
@@ -241,13 +250,14 @@ class Pepper : Salt {
   }
   inline void modeChanged();
   RTQueue commandQueue;
-  void commandReceived(Command command);
+  void requestReceived(Request &);
 public:
   Pepper(BelaContext *);
   ~Pepper();
   void render(BelaContext *);
   void sendCommand(Command const &cmd) {
-    commandQueue.write(cmd);
+    Request req { cmd };
+    commandQueue.write(req);
   }
   void updateDisplay(Message const &msg) {
     braille.write(msg);
@@ -412,29 +422,16 @@ public:
   }
 };
 
-class Biquad {
-  double B0, B1, B2, A1, A2;
-  double X[2], Y[2];
-public:
-  Biquad()
-  : B0(0.99949640), B1(-1.99899280), B2(B0), A1(-1.99899254), A2(0.99899305)
-  , X{0, 0}, Y{0, 0}
-  {}
-  double operator()(double in) {
-    float out = B0 * in + B1 * X[0] + B2 * X[1] - A1 * Y[0] - A2 * Y[1];
-
-    X[1] = X[0];
-    X[0] = in;
-    Y[1] = Y[0];
-    Y[0] = out;
-    return out;
-  }
-};
-
 class AudioLevelMeter : public Mode {
   struct Channel {
-    Biquad dcblock;
+    Biquad<float> dcblock;
     float localLevel = 0, peakLevel = 0;
+
+    Channel(unsigned int sr)
+    : dcblock(Biquad<float>::highpass(sr * boost::units::si::hertz,
+				      5 * boost::units::si::hertz,
+				      0.9))
+    {}
 
     void operator()(float sample) {
       float const level = std::abs(dcblock(sample));
@@ -453,7 +450,11 @@ class AudioLevelMeter : public Mode {
   static constexpr float const localDecayRate = 0.99, peakDecayRate = 0.999;
 public:
   AudioLevelMeter(Pepper &pepper, BelaContext *bela)
-  : Mode(pepper), data(bela->audioInChannels) {}
+  : Mode(pepper) {
+    for (unsigned int i = 0; i < bela->audioInChannels; i++) {
+      data.emplace_back(bela->audioSampleRate);
+    }
+  }
   ModeIdentifier mode() const override { return ModeIdentifier::AudioLevelMeter; }
   void activate() override {}
   void deactivate() override {}
@@ -621,17 +622,22 @@ Pepper::Pepper(BelaContext *bela)
   for (auto &plugin: plugins) plugin->activate();
 }
 
-void Pepper::commandReceived(Command command) {
-  switch (command) {
-  case Command::PrevPlugin:
-    prevPlugin();
-    break;
-  case Command::NextPlugin:
-    nextPlugin();
-    break;
-  default:
-    fprintf(stderr, "Unknown command %d\n", static_cast<int>(command));
-  }
+void Pepper::requestReceived(Request &req) {
+  mpark::visit(
+    [this](Command cmd) {
+      switch (cmd) {
+      case Command::PrevPlugin:
+	prevPlugin();
+	break;
+      case Command::NextPlugin:
+	nextPlugin();
+	break;
+      default:
+	fprintf(stderr, "Unknown command %d\n", static_cast<int>(cmd));
+      }
+    },
+    req
+  );
 }
 
 void Pepper::modeChanged() {
@@ -772,10 +778,10 @@ void Pepper::render(BelaContext *bela) {
     char buffer[128];
     ssize_t const size = commandQueue.receive(buffer, 128);
     switch (size) {
-    case sizeof(Command): {
-      Command cmd;
-      memcpy(&cmd, buffer, size);
-      commandReceived(cmd);
+    case sizeof(Request): {
+      Request req;
+      memcpy(&req, buffer, size);
+      requestReceived(req);
       break;
     }
     default:
