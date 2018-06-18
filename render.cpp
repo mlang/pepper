@@ -5,7 +5,6 @@
 //------------------------------------------------------------------------------//
 #include "AuxTask.h"
 #include "DSP.h"
-#include "EdgeDetect.h"
 #include "RTPipe.h"
 #include "RTQueue.h"
 #include "mpark_variant.h"
@@ -423,18 +422,20 @@ public:
 };
 
 class AudioLevelMeter : public Mode {
-  struct Channel {
+  struct AudioChannel {
     Biquad<float> dcblock;
     float localLevel = 0, peakLevel = 0;
 
-    Channel(unsigned int sr)
-    : dcblock(Biquad<float>::highpass(sr * boost::units::si::hertz,
-				      5 * boost::units::si::hertz,
-				      0.9))
+    AudioChannel(unsigned int sr)
+    : dcblock {
+        Biquad<float>::highpass(sr * boost::units::si::hertz,
+				5 * boost::units::si::hertz,
+				0.9)
+      }
     {}
 
     void operator()(float sample) {
-      float const level = std::abs(dcblock(sample));
+      float const level = std::fabs(dcblock(sample));
       if (level > localLevel)
         localLevel = level;
       else
@@ -445,31 +446,33 @@ class AudioLevelMeter : public Mode {
         peakLevel *= peakDecayRate;
     }
   };
-  std::vector<Channel> data;
+  std::vector<AudioChannel> audio;
   unsigned int blockCount = 0;
   static constexpr float const localDecayRate = 0.99, peakDecayRate = 0.999;
 public:
   AudioLevelMeter(Pepper &pepper, BelaContext *bela)
   : Mode(pepper) {
     for (unsigned int i = 0; i < bela->audioInChannels; i++) {
-      data.emplace_back(bela->audioSampleRate);
+      audio.emplace_back(bela->audioSampleRate);
     }
   }
-  ModeIdentifier mode() const override { return ModeIdentifier::AudioLevelMeter; }
+  ModeIdentifier mode() const override {
+    return ModeIdentifier::AudioLevelMeter;
+  }
   void activate() override {}
   void deactivate() override {}
   void run(BelaContext *bela) override {
     for (unsigned int channel = 0; channel < bela->audioInChannels; ++channel) {
       auto const samples = audioIn(bela, channel);
-      std::for_each(samples, samples + bela->audioFrames, data[channel]);
+      std::for_each(samples, samples + bela->audioFrames, audio[channel]);
       std::copy_n(samples, bela->audioFrames, audioOut(bela, channel));
     }
     blockCount++;
     if (blockCount % 100 == 0) {
       Message msg {
         LevelsChanged {
-          data[0].localLevel, data[1].localLevel,
-          data[0].peakLevel, data[1].peakLevel,
+          audio[0].localLevel, audio[1].localLevel,
+          audio[0].peakLevel, audio[1].peakLevel,
           { analogReadNI(bela, 0, 0)
           , analogReadNI(bela, 0, 1)
           , analogReadNI(bela, 0, 2)

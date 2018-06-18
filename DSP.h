@@ -26,13 +26,31 @@ public:
 
 template<typename T> using EWMA = ExponentiallyWeightedMovingAverage<T>;
 
+template<typename T>
+class EdgeDetect {
+  T previousDifference = T(0);
+  T threshold;
+  EWMA<T> fastAverage, slowAverage;
+public:
+  EdgeDetect(T threshold = 0.2)
+  : threshold(threshold)
+  , fastAverage(0.25), slowAverage(0.0625)
+  {}
+  bool operator()(T value) {
+    auto const difference = fastAverage(value) - slowAverage(value);
+    auto const rising = previousDifference < threshold && difference > threshold;
+    previousDifference = difference;
+    return rising;
+  }
+};
+
 template<typename T> class Biquad {
   T b0, b1, b2,
         a1, a2,
         s1, s2;
 public:
-  Biquad() : b0{1}, b1{0}, b2{0}, a1{0}, a2{0}, s1{0}, s2{0} {}
-  Biquad(T b0, T b1, T b2, T a1, T a2)
+  constexpr Biquad() : b0{1}, b1{0}, b2{0}, a1{0}, a2{0}, s1{0}, s2{0} {}
+  constexpr Biquad(T b0, T b1, T b2, T a1, T a2)
   : b0{b0}, b1{b1}, b2{b2}, a1{a1}, a2{a2}, s1{0}, s2{0} {}
 
   using frequency = boost::units::quantity<boost::units::si::frequency, T>;
@@ -49,7 +67,7 @@ public:
     };
   }
 
-  static Biquad highpass(frequency sampleRate, frequency cutoff, T q) {
+  static constexpr Biquad highpass(frequency sampleRate, frequency cutoff, T q) {
     auto const k = std::tan(boost::math::constants::pi<T>()
 			    * (cutoff / sampleRate));
     auto const k2 = k * k;
@@ -142,4 +160,4 @@ public:
   }
 };
 
-#endif
+#endif // DSP_H_DEFINED
