@@ -69,8 +69,8 @@ public:
   : b0{b0}, b1{b1}, b2{b2}, a1{a1}, a2{a2}, s1{0}, s2{0} {}
 
   static Biquad bandpass(frequency<T> sampleRate, frequency<T> cutoff, T q) {
-    auto const k = std::tan(boost::math::constants::pi<T>()
-			    * (cutoff / sampleRate));
+    auto const k = std::tan(boost::math::constants::pi<T>() *
+			    (cutoff / sampleRate));
     auto const k2 = k * k;
     auto const norm = T(1) / (T(1) + k / q + k2);
     auto const b0 = k / q * norm;
@@ -81,8 +81,8 @@ public:
   }
 
   static Biquad highpass(frequency<T> sampleRate, frequency<T> cutoff, T q) {
-    auto const k = std::tan(boost::math::constants::pi<T>()
-			    * (cutoff / sampleRate));
+    auto const k = std::tan(boost::math::constants::pi<T>() *
+			    (cutoff / sampleRate));
     auto const k2 = k * k;
     auto const norm = T(1) / (T(1) + k / q + k2);
     auto const b0 = T(1) * norm;
@@ -93,8 +93,8 @@ public:
   }
 
   static Biquad highshelf(frequency<T> sampleRate, frequency<T> cutoff, T gain) {
-    auto const k = std::tan(boost::math::constants::pi<T>()
-			    * (cutoff / sampleRate));
+    auto const k = std::tan(boost::math::constants::pi<T>() *
+			    (cutoff / sampleRate));
     auto const k2 = k * k;
     auto const v = std::exp(std::fabs(gain) *
 			    (T(1) / T(20)) *
@@ -123,8 +123,8 @@ public:
   }
 
   static Biquad lowpass(frequency<T> sampleRate, frequency<T> cutoff, T q) {
-    auto const k = std::tan(boost::math::constants::pi<T>()
-			    * (cutoff / sampleRate));
+    auto const k = std::tan(boost::math::constants::pi<T>() *
+			    (cutoff / sampleRate));
     auto const k2 = k * k;
     auto const norm = T(1) / (T(1) + k / q + k2);
     auto const b0 = k2 * norm;
@@ -135,8 +135,8 @@ public:
   }
 
   static Biquad lowshelf(frequency<T> sampleRate, frequency<T> cutoff, T gain) {
-    auto const k = std::tan(boost::math::constants::pi<T>()
-			    * (cutoff / sampleRate));
+    auto const k = std::tan(boost::math::constants::pi<T>() *
+			    (cutoff / sampleRate));
     auto const k2 = k * k;
     auto const v = std::exp(std::fabs(gain) *
 			    (T(1) / T(20)) *

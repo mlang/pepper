@@ -130,7 +130,7 @@ class Display {
         display.writeText(name, BRLAPI_CURSOR_OFF);
       } else {
         auto const &line = lines[y - 1];
-	display.writeText(line.text, line.cursor);
+        display.writeText(line.text, line.cursor);
       }
     }
     unsigned int line() const { return y; }
@@ -177,9 +177,9 @@ class Display {
     SequencerTab() : TabBase("Sequencer", 2) {}
     void operator()(TempoChanged const &tempo) {
       if (tempo.bpm == 0.0f) {
-	lines[0].text = "Not running";
+        lines[0].text = "Not running";
       } else {
-	lines[0].text = "BPM: " + std::to_string(static_cast<int>(std::round(tempo.bpm)));
+        lines[0].text = "BPM: " + std::to_string(static_cast<int>(std::round(tempo.bpm)));
       }
     }
     void operator()(PositionChanged const &changed) {
@@ -339,12 +339,12 @@ protected:
     value[p] = map(v, 0, 1, minValue[p], maxValue[p]);
   }
   void connectAudioIn(BelaContext *bela,
-		      unsigned lv2PortIndex, unsigned channel) {
+                      unsigned lv2PortIndex, unsigned channel) {
     connectAudio(bela, lv2PortIndex, channel,
-		 const_cast<float *>(bela->audioIn));
+                 const_cast<float *>(bela->audioIn));
   }
   void connectAudioOut(BelaContext *bela,
-		       unsigned lv2PortIndex, unsigned channel) {
+                       unsigned lv2PortIndex, unsigned channel) {
     connectAudio(bela, lv2PortIndex, channel, bela->audioOut);
   }
 private:
@@ -427,7 +427,7 @@ class AudioLevelMeter : public Mode {
     float localLevel = 0, peakLevel = 0;
 
     AudioChannel(unsigned int sr)
-      : dcblock { Biquad<float>::highpass(sr * hertz, 5_Hz, 0.5) }
+    : dcblock { Biquad<float>::highpass(sr * hertz, 5_Hz, 0.5) }
     {}
 
     void operator()(float sample) {
@@ -447,22 +447,24 @@ class AudioLevelMeter : public Mode {
   static constexpr float const localDecayRate = 0.99, peakDecayRate = 0.999;
 public:
   AudioLevelMeter(Pepper &pepper, BelaContext *bela)
-  : Mode(pepper) {
-    for (unsigned int i = 0; i < bela->audioInChannels; i++) {
-      audio.emplace_back(bela->audioSampleRate);
-    }
-  }
+  : Mode(pepper)
+  , audio(bela->audioInChannels, AudioChannel(bela->audioSampleRate))
+  {}
+
   ModeIdentifier mode() const override {
     return ModeIdentifier::AudioLevelMeter;
   }
+
   void activate() override {}
   void deactivate() override {}
+
   void run(BelaContext *bela) override {
     for (unsigned int channel = 0; channel < bela->audioInChannels; ++channel) {
       auto const samples = audioIn(bela, channel);
       std::for_each(samples, samples + bela->audioFrames, audio[channel]);
       std::copy_n(samples, bela->audioFrames, audioOut(bela, channel));
     }
+
     blockCount++;
     if (blockCount % 100 == 0) {
       Message msg {
@@ -526,18 +528,18 @@ public:
   void run(BelaContext *bela, BPM bpm) {
     if (offset) {
       if (length) {
-	length = *length + *offset;
-	bpm(60.0f / (static_cast<float>(*length) / static_cast<float>(bela->analogSampleRate)) / 4.0f);
+        length = *length + *offset;
+        bpm(60.0f / (static_cast<float>(*length) / static_cast<float>(bela->analogSampleRate)) / 4.0f);
       }
       length = bela->analogFrames - *offset;
       offset = boost::none;
     } else {
       if (length) {
-	length = *length + bela->analogFrames;
-	if (*length > bela->analogSampleRate) {
-	  bpm(0.0f);
-	  length = boost::none;
-	}
+        length = *length + bela->analogFrames;
+        if (*length > bela->analogSampleRate) {
+          bpm(0.0f);
+          length = boost::none;
+        }
       }
     }
   }
@@ -569,11 +571,11 @@ public:
         position = 0;
       }
       if (clockRising(analogIn<0>(bela)[frame])) {
-	clock.tick(frame);
+        clock.tick(frame);
         if (pattern[position] == 1) {
           analogOut[0].set_for(frame, 0.9, 1ms);
         }
-	pepper.updateDisplay(Message { PositionChanged { position } });
+        pepper.updateDisplay(Message { PositionChanged { position } });
         position = (position + 1) % pattern.size();
       }
     }
@@ -626,13 +628,13 @@ void Pepper::requestReceived(Request &req) {
     [this](Command cmd) {
       switch (cmd) {
       case Command::PrevPlugin:
-	prevPlugin();
-	break;
+        prevPlugin();
+        break;
       case Command::NextPlugin:
-	nextPlugin();
-	break;
+        nextPlugin();
+        break;
       default:
-	fprintf(stderr, "Unknown command %d\n", static_cast<int>(cmd));
+        fprintf(stderr, "Unknown command %d\n", static_cast<int>(cmd));
       }
     },
     req
@@ -718,13 +720,13 @@ void Display::doPoll() {
         if (read(updatePipe.fileDescriptor(), &msg, sizeof(Message)) ==
             sizeof(Message)) {
           mpark::visit(
-	    boost::hana::overload(
-	      [this](ModeChanged const &changed) { currentMode = changed.mode; },
-	      [this](LevelsChanged const &level) { levelMeterTab()(level); },
-	      [this](TempoChanged const &tempo) { sequencerTab()(tempo); },
-	      [this](PositionChanged const &position) { sequencerTab()(position); }),
-	    msg);
-	  redraw();
+            boost::hana::overload(
+              [this](ModeChanged const &changed) { currentMode = changed.mode; },
+              [this](LevelsChanged const &level) { levelMeterTab()(level); },
+              [this](TempoChanged const &tempo) { sequencerTab()(tempo); },
+              [this](PositionChanged const &position) { sequencerTab()(position); }),
+            msg);
+          redraw();
         }
       }
     }
@@ -739,26 +741,26 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
       switch (key.command) {
       case BRLAPI_KEY_CMD_FWINLT:
         if (mpark::visit([](auto const &tab) { return tab.line(); }, currentTab())
-	    == 0) {
+            == 0) {
           pepper.sendCommand(Command::PrevPlugin);
         }
         return;
       case BRLAPI_KEY_CMD_FWINRT:
         if (mpark::visit([](auto const &tab) { return tab.line(); }, currentTab())
-	    == 0) {
+            == 0) {
           pepper.sendCommand(Command::NextPlugin);
         }
         return;
       case BRLAPI_KEY_CMD_LNUP:
-	mpark::visit([this](auto &tab) { tab.lineUp(*this); }, currentTab());
+        mpark::visit([this](auto &tab) { tab.lineUp(*this); }, currentTab());
         return;
       case BRLAPI_KEY_CMD_LNDN:
-	mpark::visit([this](auto &tab) { return tab.lineDown(*this); },
-		     currentTab());
+        mpark::visit([this](auto &tab) { return tab.lineDown(*this); },
+                     currentTab());
         return;
       case BRLAPI_KEY_CMD_ROUTE:
-	mpark::visit([this, &key](auto &tab) { tab.click(key.argument); }, currentTab());
-	return;
+        mpark::visit([this, &key](auto &tab) { tab.click(key.argument); }, currentTab());
+        return;
       default:
         break;
       }
