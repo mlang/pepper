@@ -427,11 +427,7 @@ class AudioLevelMeter : public Mode {
     float localLevel = 0, peakLevel = 0;
 
     AudioChannel(unsigned int sr)
-    : dcblock {
-        Biquad<float>::highpass(sr * boost::units::si::hertz,
-				5 * boost::units::si::hertz,
-				0.9)
-      }
+      : dcblock { Biquad<float>::highpass(sr * hertz, 5_Hz, 0.5) }
     {}
 
     void operator()(float sample) {

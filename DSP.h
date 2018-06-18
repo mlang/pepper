@@ -44,18 +44,31 @@ public:
   }
 };
 
+template<typename T>
+using frequency = boost::units::quantity<boost::units::si::frequency, T>;
+
+using boost::units::si::hertz;
+
+frequency<float> operator"" _Hz(unsigned long long v) {
+  return float(v) * hertz;
+}
+
+frequency<float> operator"" _Hz(long double v) {
+  return float(v) * hertz;
+}
+
 template<typename T> class Biquad {
+  static_assert(std::is_floating_point<T>::value,
+		"T must be a floating point type");
   T b0, b1, b2,
         a1, a2,
         s1, s2;
 public:
-  constexpr Biquad() : b0{1}, b1{0}, b2{0}, a1{0}, a2{0}, s1{0}, s2{0} {}
-  constexpr Biquad(T b0, T b1, T b2, T a1, T a2)
+  Biquad() : b0{1}, b1{0}, b2{0}, a1{0}, a2{0}, s1{0}, s2{0} {}
+  Biquad(T b0, T b1, T b2, T a1, T a2)
   : b0{b0}, b1{b1}, b2{b2}, a1{a1}, a2{a2}, s1{0}, s2{0} {}
 
-  using frequency = boost::units::quantity<boost::units::si::frequency, T>;
-  
-  static Biquad bandpass(frequency sampleRate, frequency cutoff, T q) {
+  static Biquad bandpass(frequency<T> sampleRate, frequency<T> cutoff, T q) {
     auto const k = std::tan(boost::math::constants::pi<T>()
 			    * (cutoff / sampleRate));
     auto const k2 = k * k;
@@ -67,7 +80,7 @@ public:
     };
   }
 
-  static constexpr Biquad highpass(frequency sampleRate, frequency cutoff, T q) {
+  static Biquad highpass(frequency<T> sampleRate, frequency<T> cutoff, T q) {
     auto const k = std::tan(boost::math::constants::pi<T>()
 			    * (cutoff / sampleRate));
     auto const k2 = k * k;
@@ -79,7 +92,7 @@ public:
     };
   }
 
-  static Biquad highshelf(frequency sampleRate, frequency cutoff, T gain) {
+  static Biquad highshelf(frequency<T> sampleRate, frequency<T> cutoff, T gain) {
     auto const k = std::tan(boost::math::constants::pi<T>()
 			    * (cutoff / sampleRate));
     auto const k2 = k * k;
@@ -109,7 +122,7 @@ public:
     }
   }
 
-  static Biquad lowpass(frequency sampleRate, frequency cutoff, T q) {
+  static Biquad lowpass(frequency<T> sampleRate, frequency<T> cutoff, T q) {
     auto const k = std::tan(boost::math::constants::pi<T>()
 			    * (cutoff / sampleRate));
     auto const k2 = k * k;
@@ -121,7 +134,7 @@ public:
     };
   }
 
-  static Biquad lowshelf(frequency sampleRate, frequency cutoff, T gain) {
+  static Biquad lowshelf(frequency<T> sampleRate, frequency<T> cutoff, T gain) {
     auto const k = std::tan(boost::math::constants::pi<T>()
 			    * (cutoff / sampleRate));
     auto const k2 = k * k;
@@ -152,7 +165,7 @@ public:
   }
 
   T operator()(T in) {
-    auto const out = b0 * in + s1;
+    T out = b0 * in + s1;
     s1 = s2 + b1 * in - a1 * out;
     s2 = b2 * in - a2 * out;
 
