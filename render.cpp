@@ -14,12 +14,16 @@
 #include <lilv/lilvmm.hpp>
 #include <lv2/lv2plug.in/ns/ext/buf-size/buf-size.h>
 #include <poll.h>
+#include <boost/archive/text_iarchive.hpp>
+#include <boost/archive/text_oarchive.hpp>
 #include <boost/hana/functional/overload.hpp>
 #include <boost/optional.hpp>
+#include <boost/serialization/vector.hpp>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -79,7 +83,21 @@ public:
       channel += 1;
     }
   }
+  template<typename Archive> void serialize(Archive &archive, unsigned int version) {
+    archive & pattern;
+    archive & song;
+  }
 };
+
+void load(Song &song, std::string filename) {
+  std::ifstream ifs(filename);
+  if (ifs.good()) {
+    boost::archive::text_iarchive ia(ifs);
+    ia >> song;
+  } else {
+    std::cout << filename << " does not exist" << std::endl;
+  }
+}
 
 enum class Command { PrevPlugin, NextPlugin };
 
@@ -602,6 +620,7 @@ public:
   , song()
   , analogOut()
   {
+    load(song, "default.pepper");
     for (unsigned int channel = 0; channel < bela->analogOutChannels; ++channel) {
       analogOut.emplace_back(bela, channel);
     }
