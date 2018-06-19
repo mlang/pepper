@@ -83,7 +83,7 @@ public:
       channel += 1;
     }
   }
-  template<typename Archive> void serialize(Archive &archive, unsigned int version) {
+  template<typename Archive> void serialize(Archive &archive, unsigned int) {
     archive & pattern;
     archive & song;
   }
@@ -95,7 +95,10 @@ void load(Song &song, std::string filename) {
     boost::archive::text_iarchive ia(ifs);
     ia >> song;
   } else {
-    std::cout << filename << " does not exist" << std::endl;
+    std::cout << filename << " does not exist, saving..." << std::endl;
+    std::ofstream ofs(filename);
+    boost::archive::text_oarchive oa(ofs);
+    oa << song;
   }
 }
 
