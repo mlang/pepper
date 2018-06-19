@@ -26,7 +26,7 @@
 #include <vector>
 //-*--*---*----*-----*------*-------*--------*-------*------*-----*----*---*--*-//
 
-using namespace std::literals::chrono_literals; // ms
+using namespace std::literals::chrono_literals;
 
 namespace {
 
@@ -35,10 +35,50 @@ enum class ModeIdentifier {
   AudioLevelMeter, Sequencer
 };
 
-class Pattern {
-  std::vector<int> data;
+class Song {
+  std::vector<std::vector<int>> pattern;
+  std::vector<std::vector<int>> song;
+  unsigned int position = 0;
 public:
-  Pattern() : data{1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 1} {}
+  Song() : pattern {
+    {1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 1},
+    {1, 0, 0, 0}
+  }, song{
+    {1, 1, 1, 1},
+    {0, 0}
+  } {}
+  void reset() { position = 0; }
+  void next() {
+    position = (position + 1) % length();
+  }
+  unsigned int length() const {
+    unsigned int max = 0;
+    for (auto const &track: song) {
+      unsigned int ticks = 0;
+      for (auto index: track) {
+	ticks += pattern[index].size();
+      }
+      if (ticks > max) max = ticks;
+    }
+    return max;
+  }
+  unsigned int getPosition() const noexcept { return position; }
+  template<typename F> void triggers(F f) {
+    unsigned int channel = 0;
+    for (auto const &track: song) {
+      unsigned int pos = 0;
+      for (auto index: track) {
+	auto const &pat = pattern[index];
+	if (position < pos + pat.size()) {
+	  if (pat[position - pos] == 1) f(channel);
+	} else {
+	  pos += pattern.size();
+	}
+	if (pos > position) continue;
+      }
+      channel += 1;
+    }
+  }
 };
 
 enum class Command { PrevPlugin, NextPlugin };
@@ -79,12 +119,16 @@ constexpr int buttonPins[gNumButtons] = {
 
 class Salt {
 public:
-  Salt(BelaContext *bela) {
+  explicit Salt(BelaContext *bela) {
     pinMode(bela, 0, pwmPin, OUTPUT);
-    for(unsigned int i = 0; i < nPins; ++i) {
-      pinMode(bela, 0, trigOutPins[i], OUTPUT);
-      pinMode(bela, 0, trigInPins[i], INPUT);
-      pinMode(bela, 0, ledPins[i], OUTPUT);
+    for(auto pin : trigOutPins) {
+      pinMode(bela, 0, pin, OUTPUT);
+    }
+    for(auto pin : trigInPins) {
+      pinMode(bela, 0, pin, INPUT);
+    }
+    for(auto pin : ledPins) {
+      pinMode(bela, 0, pin, INPUT);
     }
   }
 };
@@ -102,9 +146,9 @@ class Display {
   bool connected = false;
   bool connect();
   int width = 0;
-  void writeText(std::string text, int cursor) {
+  void writeText(std::string const &text, int cursor) {
     if (connected) {
-      brlapi__writeText(handle(), cursor > width? width: cursor, text.data());
+      brlapi__writeText(handle(), cursor > width? width: cursor, text.c_str());
     }
   }
   RTPipe updatePipe;
@@ -165,8 +209,8 @@ class Display {
       lines[1].text = "R: " + std::to_string(level.r);
       lines[2].text = "PeakL: " + std::to_string(level.lp);
       lines[3].text = "PeakR: " + std::to_string(level.rp);
-      for (int i = 0; i < 8; i++) {
-        lines[4+i].text = "A" + std::to_string(i) + ": " +
+      for (unsigned long i = 0; i < 8; i++) {
+        lines[i+4].text = "A" + std::to_string(i) + ": " +
           std::to_string(level.analog[i]);
       }
     }
@@ -426,9 +470,7 @@ class AudioLevelMeter : public Mode {
     Biquad<float> dcblock;
     float localLevel = 0, peakLevel = 0;
 
-    AudioChannel(unsigned int sr)
-    : dcblock { Biquad<float>::highpass(sr * hertz, 5_Hz, 0.5) }
-    {}
+    AudioChannel(unsigned int sr) : dcblock(highpass, sr * hertz, 5_Hz, 0.5) {}
 
     void operator()(float sample) {
       float const level = std::fabs(dcblock(sample));
@@ -528,15 +570,18 @@ public:
   void run(BelaContext *bela, BPM bpm) {
     if (offset) {
       if (length) {
-        length = *length + *offset;
-        bpm(60.0f / (static_cast<float>(*length) / static_cast<float>(bela->analogSampleRate)) / 4.0f);
+        length = length.value() + offset.value();
+        bpm(60.0f /
+	    (static_cast<float>(length.value()) /
+	     static_cast<float>(bela->analogSampleRate)) /
+	    4.0f);
       }
-      length = bela->analogFrames - *offset;
+      length = bela->analogFrames - offset.value();
       offset = boost::none;
     } else {
       if (length) {
-        length = *length + bela->analogFrames;
-        if (*length > bela->analogSampleRate) {
+        length = length.value() + bela->analogFrames;
+        if (length.value() > bela->analogSampleRate) {
           bpm(0.0f);
           length = boost::none;
         }
@@ -548,14 +593,13 @@ public:
 class Sequencer final : public Mode {
   EdgeDetect<float> clockRising, resetRising;
   Clock clock;
-  unsigned int position = 0;
-  std::vector<int> pattern;
+  Song song;
   std::vector<AnalogOut> analogOut;
 public:
   Sequencer(Pepper &pepper, BelaContext *bela)
   : Mode(pepper)
   , clockRising(0.2), resetRising(0.2)
-  , pattern{1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 1}
+  , song()
   , analogOut()
   {
     for (unsigned int channel = 0; channel < bela->analogOutChannels; ++channel) {
@@ -568,15 +612,15 @@ public:
   void run(BelaContext *bela) override {
     for (unsigned int frame = 0; frame < bela->analogFrames; ++frame) {
       if (resetRising(analogIn<1>(bela)[frame])) {
-        position = 0;
+        song.reset();
       }
       if (clockRising(analogIn<0>(bela)[frame])) {
         clock.tick(frame);
-        if (pattern[position] == 1) {
-          analogOut[0].set_for(frame, 0.9, 1ms);
-        }
-        pepper.updateDisplay(Message { PositionChanged { position } });
-        position = (position + 1) % pattern.size();
+	song.triggers([this, frame](unsigned int channel) {
+	  analogOut[channel].set_for(frame, 0.9, 1ms);
+	});
+        pepper.updateDisplay(Message { PositionChanged { song.getPosition() } });
+        song.next();
       }
     }
     for (auto &channel: analogOut) channel.run(bela);

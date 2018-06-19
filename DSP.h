@@ -57,115 +57,117 @@ frequency<float> operator"" _Hz(long double v) {
   return float(v) * hertz;
 }
 
+class Bandpass {};
+constexpr Bandpass bandpass{};
+class Highpass {};
+constexpr Highpass highpass{};
+class Highshelf {};
+constexpr Highshelf highshelf{};
+class Lowpass {};
+constexpr Lowpass lowpass{};
+class Lowshelf {};
+constexpr Lowshelf lowshelf{};
+
 template<typename T> class Biquad {
   static_assert(std::is_floating_point<T>::value,
-		"T must be a floating point type");
+                "T must be a floating point type");
+
   T b0, b1, b2,
         a1, a2,
         s1, s2;
+
 public:
-  Biquad() : b0{1}, b1{0}, b2{0}, a1{0}, a2{0}, s1{0}, s2{0} {}
+  Biquad() : Biquad(1, 0, 0, 0, 0) {}
+
   Biquad(T b0, T b1, T b2, T a1, T a2)
   : b0{b0}, b1{b1}, b2{b2}, a1{a1}, a2{a2}, s1{0}, s2{0} {}
 
-  static Biquad bandpass(frequency<T> sampleRate, frequency<T> cutoff, T q) {
-    auto const k = std::tan(boost::math::constants::pi<T>() *
-			    (cutoff / sampleRate));
-    auto const k2 = k * k;
-    auto const norm = T(1) / (T(1) + k / q + k2);
-    auto const b0 = k / q * norm;
-    return {
-      b0, T(0), -b0,
-      T(2) * (k2 - T(1)) * norm, (T(1) - k / q + k2) * norm
-    };
+  Biquad(Bandpass, frequency<T> sampleRate, frequency<T> cutoff, T q)
+  : s1{0}, s2{0} {
+    T const k = std::tan(boost::math::constants::pi<T>() * (cutoff / sampleRate));
+    T const k2 = k * k;
+    T const norm = T(1) / (T(1) + k / q + k2);
+    b0 = k / q * norm;
+    b1 = T(0);
+    b2 = -b0;
+    a1 = T(2) * (k2 - T(1)) * norm;
+    a2 = (T(1) - k / q + k2) * norm;
   }
 
-  static Biquad highpass(frequency<T> sampleRate, frequency<T> cutoff, T q) {
-    auto const k = std::tan(boost::math::constants::pi<T>() *
-			    (cutoff / sampleRate));
-    auto const k2 = k * k;
-    auto const norm = T(1) / (T(1) + k / q + k2);
-    auto const b0 = T(1) * norm;
-    return {
-      b0, T(-2) * b0, b0,
-      T(2) * (k2 - T(1)) * norm, (T(1) - k / q + k2) * norm
-    };
+  Biquad(Highpass, frequency<T> sampleRate, frequency<T> cutoff, T q)
+  : s1{0}, s2{0} {
+    T const k = std::tan(boost::math::constants::pi<T>() * (cutoff / sampleRate));
+    T const k2 = k * k;
+    T const norm = T(1) / (T(1) + k / q + k2);
+    b0 = T(1) * norm;
+    b1 = T(-2) * b0;
+    b2 = b0;
+    a1 = T(2) * (k2 - T(1)) * norm;
+    a2 = (T(1) - k / q + k2) * norm;
   }
 
-  static Biquad highshelf(frequency<T> sampleRate, frequency<T> cutoff, T gain) {
-    auto const k = std::tan(boost::math::constants::pi<T>() *
-			    (cutoff / sampleRate));
-    auto const k2 = k * k;
-    auto const v = std::exp(std::fabs(gain) *
-			    (T(1) / T(20)) *
-			    boost::math::constants::ln_ten<T>());
+  Biquad(Highshelf, frequency<T> sampleRate, frequency<T> cutoff, T gain)
+  : s1{0}, s2{0} {
+    T const k = std::tan(boost::math::constants::pi<T>() * (cutoff / sampleRate));
+    T const k2 = k * k;
+    T const v = std::exp(std::fabs(gain) *
+                         (T(1) / T(20)) *
+                         boost::math::constants::ln_ten<T>());
     if (gain >= 0) {
-      auto const norm = T(1) /
-	(T(1) + boost::math::constants::root_two<T>() * k + k2);
-      auto const b0 = (v + std::sqrt(T(2) * v) * k + k2) * norm;
-      auto const b1 = T(2) * (k2 - v) * norm;
-      auto const b2 = (v - std::sqrt(T(2) * v) * k + k2) * norm;
-      auto const a1 = T(2) * (k2 - T(1)) * norm;
-      auto const a2 = (T(1) - boost::math::constants::root_two<T>() * k + k2) *
-	norm;
-      return { b0, b1, b2, a1, a2 };
+      T const norm = T(1) / (T(1) + boost::math::constants::root_two<T>() * k + k2);
+      b0 = (v + std::sqrt(T(2) * v) * k + k2) * norm;
+      b1 = T(2) * (k2 - v) * norm;
+      b2 = (v - std::sqrt(T(2) * v) * k + k2) * norm;
+      a1 = T(2) * (k2 - T(1)) * norm;
+      a2 = (T(1) - boost::math::constants::root_two<T>() * k + k2) * norm;
     } else {
-      auto const norm = T(1) / (v + std::sqrt(T(2) * v) * k + k2);
-      auto const b0 = (1 + boost::math::constants::root_two<T>() * k + k2) *
-	norm;
-      auto const b1 = T(2) * (k2 - T(1)) * norm;
-      auto const b2 = (T(1) - boost::math::constants::root_two<T>() * k + k2) *
-	norm;
-      auto const a1 = T(2) * (k2 - v) * norm;
-      auto const a2 = (v - std::sqrt(T(2) * v) * k + k2) * norm;
-      return { b0, b1, b2, a1, a2 };
+      T const norm = T(1) / (v + std::sqrt(T(2) * v) * k + k2);
+      b0 = (1 + boost::math::constants::root_two<T>() * k + k2) * norm;
+      b1 = T(2) * (k2 - T(1)) * norm;
+      b2 = (T(1) - boost::math::constants::root_two<T>() * k + k2) * norm;
+      a1 = T(2) * (k2 - v) * norm;
+      a2 = (v - std::sqrt(T(2) * v) * k + k2) * norm;
     }
   }
 
-  static Biquad lowpass(frequency<T> sampleRate, frequency<T> cutoff, T q) {
-    auto const k = std::tan(boost::math::constants::pi<T>() *
-			    (cutoff / sampleRate));
-    auto const k2 = k * k;
-    auto const norm = T(1) / (T(1) + k / q + k2);
-    auto const b0 = k2 * norm;
-    return {
-      b0, T(2) * b0, b0,
-      T(2) * (k2 - T(1)) * norm, (T(1) - k / q + k2) * norm
-    };
+  Biquad(Lowpass, frequency<T> sampleRate, frequency<T> cutoff, T q)
+  : s1{0}, s2{0} {
+    T const k = std::tan(boost::math::constants::pi<T>() * (cutoff / sampleRate));
+    T const k2 = k * k;
+    T const norm = T(1) / (T(1) + k / q + k2);
+    b0 = k2 * norm;
+    b1 = T(2) * b0;
+    b2 = b0;
+    a1 = T(2) * (k2 - T(1)) * norm;
+    a2 = (T(1) - k / q + k2) * norm;
   }
 
-  static Biquad lowshelf(frequency<T> sampleRate, frequency<T> cutoff, T gain) {
-    auto const k = std::tan(boost::math::constants::pi<T>() *
-			    (cutoff / sampleRate));
-    auto const k2 = k * k;
-    auto const v = std::exp(std::fabs(gain) *
-			    (T(1) / T(20)) *
-			    boost::math::constants::ln_ten<T>());
+  Biquad(Lowshelf, frequency<T> sampleRate, frequency<T> cutoff, T gain)
+  : s1{0}, s2{0} {
+    T const k = std::tan(boost::math::constants::pi<T>() * (cutoff / sampleRate));
+    T const k2 = k * k;
+    T const v = std::exp(std::fabs(gain) *
+                         (T(1) / T(20)) *
+                         boost::math::constants::ln_ten<T>());
     if (gain >= 0) {
-      auto const norm = T(1) /
-	(T(1) + boost::math::constants::root_two<T>() * k + k2);
-      auto const b0 = (T(1) + std::sqrt(T(2) * v) * k + v * k2) * norm;
-      auto const b1 = T(2) * (v * k2 - T(1)) * norm;
-      auto const b2 = (T(1) - std::sqrt(T(2) * v) * k + v * k2) * norm;
-      auto const a1 = T(2) * (k2 - T(1)) * norm;
-      auto const a2 = (T(1) - boost::math::constants::root_two<T>() * k + k2) *
-	norm;
-      return { b0, b1, b2, a1, a2 };
+      T const norm = T(1) / (T(1) + boost::math::constants::root_two<T>() * k + k2);
+      b0 = (T(1) + std::sqrt(T(2) * v) * k + v * k2) * norm;
+      b1 = T(2) * (v * k2 - T(1)) * norm;
+      b2 = (T(1) - std::sqrt(T(2) * v) * k + v * k2) * norm;
+      a1 = T(2) * (k2 - T(1)) * norm;
+      a2 = (T(1) - boost::math::constants::root_two<T>() * k + k2) * norm;
     } else {
-      auto const norm = T(1) / (T(1) + std::sqrt(T(2) * v) * k + v * k2);
-      auto const b0 = (1 + boost::math::constants::root_two<T>() * k + k2) *
-	norm;
-      auto const b1 = T(2) * (k2 - T(1)) * norm;
-      auto const b2 = (T(1) - boost::math::constants::root_two<T>() * k + k2) *
-	norm;
-      auto const a1 = T(2) * (v * k2 - T(1)) * norm;
-      auto const a2 = (T(1) - std::sqrt(T(2) * v) * k + v * k2) * norm;
-      return { b0, b1, b2, a1, a2 };
+      T const norm = T(1) / (T(1) + std::sqrt(T(2) * v) * k + v * k2);
+      b0 = (1 + boost::math::constants::root_two<T>() * k + k2) * norm;
+      b1 = T(2) * (k2 - T(1)) * norm;
+      b2 = (T(1) - boost::math::constants::root_two<T>() * k + k2) * norm;
+      a1 = T(2) * (v * k2 - T(1)) * norm;
+      a2 = (T(1) - std::sqrt(T(2) * v) * k + v * k2) * norm;
     }
   }
 
   T operator()(T in) {
-    T out = b0 * in + s1;
+    T out = std::fma(b0, in, s1);
     s1 = s2 + b1 * in - a1 * out;
     s2 = b2 * in - a2 * out;
 
