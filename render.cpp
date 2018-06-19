@@ -123,7 +123,9 @@ struct PositionChanged {
   unsigned int position;
 };
 
-using Message = mpark::variant<ModeChanged, LevelsChanged, TempoChanged, PositionChanged>;
+using Message = mpark::variant<
+  ModeChanged, LevelsChanged, TempoChanged, PositionChanged
+>;
 
 constexpr int nPins = 4;
 
@@ -244,7 +246,8 @@ class Display {
       if (tempo.bpm == 0.0f) {
         lines[0].text = "Not running";
       } else {
-        lines[0].text = "BPM: " + std::to_string(static_cast<int>(std::round(tempo.bpm)));
+        lines[0].text = "BPM: " +
+	  std::to_string(static_cast<int>(std::round(tempo.bpm)));
       }
     }
     void operator()(PositionChanged const &changed) {
@@ -523,7 +526,7 @@ public:
 
   void run(BelaContext *bela) override {
     for (unsigned int channel = 0; channel < bela->audioInChannels; ++channel) {
-      auto const samples = audioIn(bela, channel);
+      auto * const samples = audioIn(bela, channel);
       std::for_each(samples, samples + bela->audioFrames, audio[channel]);
       std::copy_n(samples, bela->audioFrames, audioOut(bela, channel));
     }
@@ -550,6 +553,12 @@ public:
   }
 };
 
+template<typename Rep, typename Period> constexpr Rep to_samples(
+  std::chrono::duration<Rep, Period> duration, unsigned int sampleRate
+) {
+  return duration.count() * Period::num * sampleRate / Period::den;
+}
+
 class AnalogOut {
   unsigned int channel;
   unsigned int sampleRate;
@@ -562,7 +571,7 @@ public:
   void set_for(unsigned int frame, float level,
                std::chrono::duration<Rep, Period> duration) {
     this->offset = frame;
-    this->length = duration.count() * Period::num * sampleRate / Period::den;
+    this->length = to_samples(duration, sampleRate);
     this->level = level;
   }
   void run(BelaContext *bela) {
