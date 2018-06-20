@@ -83,6 +83,7 @@ public:
       channel += 1;
     }
   }
+  std::vector<std::vector<int>> &patterns() { return pattern; }
   template<typename Archive> void serialize(Archive &archive, unsigned int) {
     archive & pattern;
     archive & song;
@@ -104,7 +105,11 @@ void load(Song &song, std::string filename) {
 
 enum class Command { PrevPlugin, NextPlugin };
 
-using Request = mpark::variant<Command>;
+struct UpdateSong {
+  Song *pointer;
+};
+
+using Request = mpark::variant<Command, UpdateSong>;
 
 struct ModeChanged {
   ModeIdentifier mode;
@@ -119,12 +124,20 @@ struct TempoChanged {
   float bpm;
 };
     
+struct SongLoaded {
+  Song const *pointer;
+};
+  
 struct PositionChanged {
   unsigned int position;
 };
 
+struct SongUpdated {
+  Song *pointer;
+};
+
 using Message = mpark::variant<
-  ModeChanged, LevelsChanged, TempoChanged, PositionChanged
+  ModeChanged, LevelsChanged, TempoChanged, SongLoaded, PositionChanged, SongUpdated
 >;
 
 constexpr int nPins = 4;
@@ -180,11 +193,15 @@ class Display {
   Pepper &pepper;
   class TabBase {
     std::string name;
-    unsigned int x = 0, y = 0;
   protected:
+    unsigned int x = 0, y = 0;
     struct LineInfo {
-      int cursor = BRLAPI_CURSOR_OFF;
       std::string text;
+      int cursor = BRLAPI_CURSOR_OFF;
+
+      LineInfo() = default;
+      LineInfo(std::string const &text, int cursor = BRLAPI_CURSOR_OFF)
+      : text(text), cursor(cursor) {}
     };
     std::vector<LineInfo> lines;
   public:
@@ -217,12 +234,12 @@ class Display {
   class AnalogueOscillatorTab : public TabBase {
   public:
     AnalogueOscillatorTab() : TabBase("AnalogueOsc") {}
-    void click(int) {}
+    void click(unsigned int, Display &) {}
   };
   class FMOscillatorTab : public TabBase {
   public:
     FMOscillatorTab() : TabBase("FMOsc") {}
-    void click(int) {}
+    void click(unsigned int, Display &) {}
   };
   class LevelMeterTab : public TabBase {
   public:
@@ -237,9 +254,10 @@ class Display {
           std::to_string(level.analog[i]);
       }
     }
-    void click(int) {}
+    void click(int, Display &) {}
   };
   class SequencerTab : public TabBase {
+    Song song;
   public:
     SequencerTab() : TabBase("Sequencer", 2) {}
     void operator()(TempoChanged const &tempo) {
@@ -250,11 +268,24 @@ class Display {
 	  std::to_string(static_cast<int>(std::round(tempo.bpm)));
       }
     }
+    void operator()(Song const *song) {
+      this->song = *song;
+      lines.resize(2);
+      for (auto const &pattern: this->song.patterns()) {
+	std::string rep = "";
+	for (auto v: pattern) {
+	  char c = ' ';
+	  if (v == 1) c = '%';
+	  rep += c;
+	}
+	lines.emplace_back(rep);
+      }
+    }
     void operator()(PositionChanged const &changed) {
       lines[1].cursor = changed.position + 1;
       lines[1].text = std::string(changed.position, ' ') + '=';
     }
-    void click(int cell) { std::cout << "Click " << cell << std::endl; }
+    void click(unsigned int cell, Display &display);
   };
   using Tab = mpark::variant<
     AnalogueOscillatorTab, FMOscillatorTab,
@@ -324,6 +355,9 @@ public:
   void render(BelaContext *);
   void sendCommand(Command const &cmd) {
     Request req { cmd };
+    commandQueue.write(req);
+  }
+  void sendRequest(Request req) {
     commandQueue.write(req);
   }
   void updateDisplay(Message const &msg) {
@@ -633,6 +667,7 @@ public:
   , analogOut()
   {
     load(song, "default.pepper");
+    pepper.updateDisplay(Message { SongLoaded { &song } });
     for (unsigned int channel = 0; channel < bela->analogOutChannels; ++channel) {
       analogOut.emplace_back(bela, channel);
     }
@@ -640,6 +675,9 @@ public:
   ModeIdentifier mode() const override { return ModeIdentifier::Sequencer; }
   void activate() override {}
   void deactivate() override {}
+  void setSong(Song *newSong) {
+    song = std::move(*newSong);
+  }
   void run(BelaContext *bela) override {
     for (unsigned int frame = 0; frame < bela->analogFrames; ++frame) {
       if (resetRising(analogIn<1>(bela)[frame])) {
@@ -700,18 +738,27 @@ Pepper::Pepper(BelaContext *bela)
 
 void Pepper::requestReceived(Request &req) {
   mpark::visit(
-    [this](Command cmd) {
-      switch (cmd) {
-      case Command::PrevPlugin:
-        prevPlugin();
-        break;
-      case Command::NextPlugin:
-        nextPlugin();
-        break;
-      default:
-        fprintf(stderr, "Unknown command %d\n", static_cast<int>(cmd));
-      }
-    },
+    boost::hana::overload(
+      [this](Command cmd) {
+	switch (cmd) {
+	case Command::PrevPlugin:
+	  prevPlugin();
+	  break;
+	case Command::NextPlugin:
+	  nextPlugin();
+	  break;
+	default:
+	  fprintf(stderr, "Unknown command %d\n", static_cast<int>(cmd));
+	}
+      },
+      [this](UpdateSong const &song) {
+	for (auto &plugin: plugins) {
+	  if (plugin->mode() == ModeIdentifier::Sequencer) {
+	    dynamic_cast<Sequencer&>(*plugin).setSong(song.pointer);
+	  }
+	}
+	updateDisplay(Message { SongUpdated { song.pointer } });
+      }),
     req
   );
 }
@@ -796,10 +843,24 @@ void Display::doPoll() {
             sizeof(Message)) {
           mpark::visit(
             boost::hana::overload(
-              [this](ModeChanged const &changed) { currentMode = changed.mode; },
-              [this](LevelsChanged const &level) { levelMeterTab()(level); },
-              [this](TempoChanged const &tempo) { sequencerTab()(tempo); },
-              [this](PositionChanged const &position) { sequencerTab()(position); }),
+              [this](ModeChanged const &changed) {
+		currentMode = changed.mode;
+	      },
+              [this](LevelsChanged const &level) {
+		levelMeterTab()(level);
+	      },
+              [this](TempoChanged const &tempo) {
+		sequencerTab()(tempo);
+	      },
+	      [this](SongLoaded const &song) {
+		sequencerTab()(song.pointer);
+	      },
+              [this](PositionChanged const &position) {
+		sequencerTab()(position);
+	      },
+	      [this](SongUpdated const &song) {
+		delete song.pointer;
+	      }),
             msg);
           redraw();
         }
@@ -834,7 +895,7 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
                      currentTab());
         return;
       case BRLAPI_KEY_CMD_ROUTE:
-        mpark::visit([this, &key](auto &tab) { tab.click(key.argument); }, currentTab());
+        mpark::visit([this, &key](auto &tab) { tab.click(key.argument, *this); }, currentTab());
         return;
       default:
         break;
@@ -849,6 +910,16 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
   writeText(str.str(), BRLAPI_CURSOR_OFF);
 }
 
+void Display::SequencerTab::click(unsigned int cell, Display &display) {
+  if (y > 2 && y < 2 + song.patterns().size()) {
+    auto &pattern = song.patterns()[y - 3];
+    if (cell < pattern.size()) {
+      pattern[cell] = !pattern[cell];
+      Song *newSong = new Song(song);
+      display.pepper.sendRequest(UpdateSong { newSong });
+    }
+  }
+}
 void Pepper::render(BelaContext *bela) {
   {
     char buffer[128];
