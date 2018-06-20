@@ -10,23 +10,24 @@
 #include "mpark_variant.h"
 #include <Bela.h>
 #include <DigitalChannelManager.h>
-#include <brlapi.h>
-#include <lilv/lilvmm.hpp>
-#include <lv2/lv2plug.in/ns/ext/buf-size/buf-size.h>
-#include <poll.h>
+#include <algorithm>
 #include <boost/archive/text_iarchive.hpp>
 #include <boost/archive/text_oarchive.hpp>
 #include <boost/hana/functional/overload.hpp>
 #include <boost/optional.hpp>
 #include <boost/serialization/vector.hpp>
-#include <algorithm>
+#include <brlapi.h>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <lilv/lilvmm.hpp>
+#include <lv2/lv2plug.in/ns/ext/buf-size/buf-size.h>
 #include <memory>
+#include <poll.h>
 #include <sstream>
+#include <utility>
 #include <vector>
 //-*--*---*----*-----*------*-------*--------*-------*------*-----*----*---*--*-//
 
@@ -60,9 +61,11 @@ public:
     for (auto const &track: song) {
       unsigned int ticks = 0;
       for (auto index: track) {
-	ticks += pattern[index].size();
+        ticks += pattern[index].size();
       }
-      if (ticks > max) max = ticks;
+      if (ticks > max) {
+        max = ticks;
+      }
     }
     return max;
   }
@@ -72,25 +75,30 @@ public:
     for (auto const &track: song) {
       unsigned int pos = 0;
       for (auto index: track) {
-	auto const &pat = pattern[index];
-	if (position < pos + pat.size()) {
-	  if (pat[position - pos] == 1) f(channel);
-	} else {
-	  pos += pattern.size();
-	}
-	if (pos > position) continue;
+        auto const &pat = pattern[index];
+        if (position < pos + pat.size()) {
+          if (pat[position - pos] == 1) {
+            f(channel);
+          }
+        } else {
+          pos += pattern.size();
+        }
+        if (pos > position) {
+          continue;
+        }
       }
       channel += 1;
     }
   }
   std::vector<std::vector<int>> &patterns() { return pattern; }
-  template<typename Archive> void serialize(Archive &archive, unsigned int) {
+  template<typename Archive>
+  void serialize(Archive &archive, unsigned int /*version*/) {
     archive & pattern;
     archive & song;
   }
 };
 
-void load(Song &song, std::string filename) {
+void load(Song &song, const std::string& filename) {
   std::ifstream ifs(filename);
   if (ifs.good()) {
     boost::archive::text_iarchive ia(ifs);
@@ -201,8 +209,8 @@ class Display {
 
       LineInfo() = default;
       explicit LineInfo(
-        std::string const &text, int cursor = BRLAPI_CURSOR_OFF
-      ) : text(text), cursor(cursor) {}
+        std::string text, int cursor = BRLAPI_CURSOR_OFF
+      ) : text(std::move(text)), cursor(cursor) {}
     };
     std::vector<LineInfo> lines;
   public:
@@ -235,12 +243,12 @@ class Display {
   class AnalogueOscillatorTab : public TabBase {
   public:
     AnalogueOscillatorTab() : TabBase("AnalogueOsc") {}
-    void click(unsigned int, Display &) {}
+    void click(unsigned int /*cell*/, Display & /*display*/) {}
   };
   class FMOscillatorTab : public TabBase {
   public:
     FMOscillatorTab() : TabBase("FMOsc") {}
-    void click(unsigned int, Display &) {}
+    void click(unsigned int /*cell*/, Display & /*display*/) {}
   };
   class LevelMeterTab : public TabBase {
   public:
@@ -255,7 +263,7 @@ class Display {
           std::to_string(level.analog[i]);
       }
     }
-    void click(int, Display &) {}
+    void click(unsigned int /*cell*/, Display & /*display*/) {}
   };
   class SequencerTab : public TabBase {
     Song song;
@@ -266,20 +274,21 @@ class Display {
         lines[0].text = "Not running";
       } else {
         lines[0].text = "BPM: " +
-	  std::to_string(static_cast<int>(std::round(tempo.bpm)));
+          std::to_string(static_cast<int>(std::round(tempo.bpm)));
       }
     }
     void operator()(Song const *song) {
       this->song = *song;
       lines.resize(2);
       for (auto const &pattern: this->song.patterns()) {
-	std::string rep = "";
-	for (auto v: pattern) {
-	  char c = ' ';
-	  if (v == 1) c = '%';
-	  rep += c;
-	}
-	lines.emplace_back(rep);
+        std::string rep;
+        for (auto v: pattern) {
+          char c = ' ';
+          if (v == 1) { c = '%';
+          
+}rep += c;
+        }
+        lines.emplace_back(rep);
       }
     }
     void operator()(PositionChanged const &changed) {
@@ -330,13 +339,13 @@ class Pepper : Salt {
   int index = -1;
   Display braille;
   DigitalChannelManager digital;
-  static void digitalChanged(bool state, unsigned int, void *data) {
+  static void digitalChanged(bool state, unsigned int /*unused*/, void *data) {
     if (state) {
       static_cast<Pepper *>(data)->nextPlugin();
     }
   }
   void prevPlugin() {
-    if (index) {
+    if (index != 0) {
       index -= 1;
     } else {
       index = plugins.size() - 1;
@@ -349,11 +358,11 @@ class Pepper : Salt {
   }
   inline void modeChanged();
   RTQueue commandQueue;
-  void requestReceived(Request &);
+  void requestReceived(Request & /*req*/);
 public:
-  Pepper(BelaContext *);
+  explicit Pepper(BelaContext * /*bela*/);
   ~Pepper();
-  void render(BelaContext *);
+  void render(BelaContext * /*bela*/);
   void sendCommand(Command const &cmd) {
     Request req { cmd };
     commandQueue.write(req);
@@ -398,7 +407,7 @@ class Mode {
 protected:
   Pepper &pepper;
 public:
-  Mode(Pepper &pepper) : pepper(pepper) {}
+  explicit Mode(Pepper &pepper) : pepper(pepper) {}
   virtual ~Mode() = default;
 
   virtual ModeIdentifier mode() const = 0;
@@ -529,18 +538,20 @@ class AudioLevelMeter : public Mode {
     Biquad<float> dcblock;
     float localLevel = 0, peakLevel = 0;
 
-    AudioChannel(unsigned int sr) : dcblock(highpass, sr * hertz, 5_Hz, 0.5) {}
+    explicit AudioChannel(unsigned int sr) : dcblock(highpass, sr * hertz, 5_Hz, 0.5) {}
 
     void operator()(float sample) {
       float const level = std::fabs(dcblock(sample));
-      if (level > localLevel)
+      if (level > localLevel) {
         localLevel = level;
-      else
+      } else {
         localLevel *= localDecayRate;
-      if (level > peakLevel)
+      }
+      if (level > peakLevel) {
         peakLevel = level;
-      else
+      } else {
         peakLevel *= peakDecayRate;
+      }
     }
   };
   std::vector<AudioChannel> audio;
@@ -598,7 +609,7 @@ class AnalogOut {
   unsigned int channel;
   unsigned int sampleRate;
   size_t offset = 0, length = 0;
-  float level;
+  float level{};
 public:
   AnalogOut(BelaContext *bela, unsigned int channel)
   : channel(channel), sampleRate(bela->analogSampleRate) {}
@@ -637,9 +648,9 @@ public:
       if (length) {
         length = length.value() + offset.value();
         bpm(60.0f /
-	    (static_cast<float>(length.value()) /
-	     static_cast<float>(bela->analogSampleRate)) /
-	    4.0f);
+            (static_cast<float>(length.value()) /
+             static_cast<float>(bela->analogSampleRate)) /
+            4.0f);
       }
       length = bela->analogFrames - offset.value();
       offset = boost::none;
@@ -664,8 +675,7 @@ public:
   Sequencer(Pepper &pepper, BelaContext *bela)
   : Mode(pepper)
   , clockRising(0.2), resetRising(0.2)
-  , song()
-  , analogOut()
+   
   {
     load(song, "default.pepper");
     pepper.updateDisplay(Message { SongLoaded { &song } });
@@ -686,14 +696,16 @@ public:
       }
       if (clockRising(analogIn<0>(bela)[frame])) {
         clock.tick(frame);
-	song.triggers([this, frame](unsigned int channel) {
-	  analogOut[channel].set_for(frame, 0.9, 1ms);
-	});
+        song.triggers([this, frame](unsigned int channel) {
+          analogOut[channel].set_for(frame, 0.9, 1ms);
+        });
         pepper.updateDisplay(Message { PositionChanged { song.getPosition() } });
         song.next();
       }
     }
-    for (auto &channel: analogOut) channel.run(bela);
+    for (auto &channel: analogOut) {
+      channel.run(bela);
+    }
     clock.run(bela, [this](float bpm) {
       pepper.updateDisplay(Message { TempoChanged { bpm } });
     });
@@ -732,33 +744,36 @@ Pepper::Pepper(BelaContext *bela)
     }
   }
 
-  if (!this->plugins.empty()) index = 0;
+  if (!this->plugins.empty()) {
+    index = 0;
+  }
+  for (auto &plugin: plugins) { plugin->activate();
   modeChanged();
-  for (auto &plugin: plugins) plugin->activate();
+}
 }
 
 void Pepper::requestReceived(Request &req) {
   mpark::visit(
     boost::hana::overload(
       [this](Command cmd) {
-	switch (cmd) {
-	case Command::PrevPlugin:
-	  prevPlugin();
-	  break;
-	case Command::NextPlugin:
-	  nextPlugin();
-	  break;
-	default:
-	  fprintf(stderr, "Unknown command %d\n", static_cast<int>(cmd));
-	}
+        switch (cmd) {
+        case Command::PrevPlugin:
+          prevPlugin();
+          break;
+        case Command::NextPlugin:
+          nextPlugin();
+          break;
+        default:
+          fprintf(stderr, "Unknown command %d\n", static_cast<int>(cmd));
+        }
       },
       [this](UpdateSong const &song) {
-	for (auto &plugin: plugins) {
-	  if (plugin->mode() == ModeIdentifier::Sequencer) {
-	    dynamic_cast<Sequencer&>(*plugin).setSong(song.pointer);
-	  }
-	}
-	updateDisplay(Message { SongUpdated { song.pointer } });
+        for (auto &plugin: plugins) {
+          if (plugin->mode() == ModeIdentifier::Sequencer) {
+            dynamic_cast<Sequencer&>(*plugin).setSong(song.pointer);
+          }
+        }
+        updateDisplay(Message { SongUpdated { song.pointer } });
       }),
     req
   );
@@ -794,7 +809,9 @@ Display::Display(Pepper &pepper)
       break;
     }
   }
-  if (connected) writeText("Welcome!", BRLAPI_CURSOR_OFF);
+  if (connected) {
+    writeText("Welcome!", BRLAPI_CURSOR_OFF);
+  }
 }
 
 bool Display::connect() {
@@ -820,7 +837,7 @@ void Display::doPoll() {
     { updatePipe.open(), POLLIN, 0 }
   };
 
-  while (!gShouldStop) {
+  while (gShouldStop == 0) {
     int ret = ::poll(fds, std::distance(std::begin(fds), std::end(fds)),
                      std::chrono::milliseconds(10).count());
     if (ret < 0) {
@@ -828,10 +845,14 @@ void Display::doPoll() {
       break;
     }
 
-    if (ret == 0) continue;
+    if (ret == 0) {
+      continue;
+    }
 
     for (auto const &item: fds) {
-      if (!(item.revents & POLLIN)) continue;
+      if ((item.revents & POLLIN) == 0) {
+        continue;
+      }
 
       if (item.fd == fd) {
         brlapi_keyCode_t keyCode;
@@ -845,23 +866,23 @@ void Display::doPoll() {
           mpark::visit(
             boost::hana::overload(
               [this](ModeChanged const &changed) {
-		currentMode = changed.mode;
-	      },
+                currentMode = changed.mode;
+              },
               [this](LevelsChanged const &level) {
-		levelMeterTab()(level);
-	      },
+                levelMeterTab()(level);
+              },
               [this](TempoChanged const &tempo) {
-		sequencerTab()(tempo);
-	      },
-	      [this](SongLoaded const &song) {
-		sequencerTab()(song.pointer);
-	      },
+                sequencerTab()(tempo);
+              },
+              [this](SongLoaded const &song) {
+                sequencerTab()(song.pointer);
+              },
               [this](PositionChanged const &position) {
-		sequencerTab()(position);
-	      },
-	      [this](SongUpdated const &song) {
-		delete song.pointer;
-	      }),
+                sequencerTab()(position);
+              },
+              [this](SongUpdated const &song) {
+                delete song.pointer;
+              }),
             msg);
           redraw();
         }
@@ -871,7 +892,7 @@ void Display::doPoll() {
 }
 
 void Display::keyPressed(brlapi_keyCode_t keyCode) {
-  brlapi_expandedKeyCode_t key;
+  brlapi_expandedKeyCode_t key{};
   if (brlapi_expandKeyCode(keyCode, &key) == 0) {
     switch (key.type) {
     case BRLAPI_KEY_TYPE_CMD:
@@ -896,7 +917,9 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
                      currentTab());
         return;
       case BRLAPI_KEY_CMD_ROUTE:
-        mpark::visit([this, &key](auto &tab) { tab.click(key.argument, *this); }, currentTab());
+        mpark::visit(
+	  [this, &key](auto &tab) { tab.click(key.argument, *this); },
+	  currentTab());
         return;
       default:
         break;
@@ -915,12 +938,13 @@ void Display::SequencerTab::click(unsigned int cell, Display &display) {
   if (y > 2 && y < 2 + song.patterns().size()) {
     auto &pattern = song.patterns()[y - 3];
     if (cell < pattern.size()) {
-      pattern[cell] = !pattern[cell];
-      Song *newSong = new Song(song);
+      pattern[cell] = pattern[cell] == 0? 1: 0;
+      auto *newSong = new Song(song);
       display.pepper.sendRequest(UpdateSong { newSong });
     }
   }
 }
+
 void Pepper::render(BelaContext *bela) {
   {
     char buffer[128];
@@ -941,7 +965,8 @@ void Pepper::render(BelaContext *bela) {
 }
 
 Pepper::~Pepper() {
-  for (auto &plugin: plugins) plugin->deactivate();
+  for (auto &plugin: plugins) { plugin->deactivate();
+}
 }
 
 // Bela
@@ -953,10 +978,11 @@ void Bela_userSettings(BelaInitSettings *settings)
   settings->interleave = 0;
 }
 
-bool setup(BelaContext *bela, void *)
+bool setup(BelaContext *bela, void * /*userData*/)
 {
   if ((bela->flags & BELA_FLAG_INTERLEAVED) == BELA_FLAG_INTERLEAVED) {
-    std::cerr << "This project only works in non-interleaved mode." << std::endl;
+    std::cerr << "This project only works in non-interleaved mode."
+              << std::endl;
     return false;
   }
   try {
@@ -967,12 +993,12 @@ bool setup(BelaContext *bela, void *)
   return bool(p);
 }
 
-void render(BelaContext *bela, void *)
+void render(BelaContext *bela, void * /*userData*/)
 {
   p->render(bela);
 }
 
-void cleanup(BelaContext *, void *)
+void cleanup(BelaContext * /*bela*/, void * /*userData*/)
 {
   p = nullptr;
 }
