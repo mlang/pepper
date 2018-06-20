@@ -53,7 +53,7 @@ public:
   } {}
   void reset() { position = 0; }
   void next() {
-    position = (position + 1) % length();
+    position = length() > 0? (position + 1) % length(): 0;
   }
   unsigned int length() const {
     unsigned int max = 0;
@@ -200,8 +200,9 @@ class Display {
       int cursor = BRLAPI_CURSOR_OFF;
 
       LineInfo() = default;
-      LineInfo(std::string const &text, int cursor = BRLAPI_CURSOR_OFF)
-      : text(text), cursor(cursor) {}
+      explicit LineInfo(
+        std::string const &text, int cursor = BRLAPI_CURSOR_OFF
+      ) : text(text), cursor(cursor) {}
     };
     std::vector<LineInfo> lines;
   public:
