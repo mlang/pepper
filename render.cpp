@@ -75,7 +75,7 @@ public:
             f(channel);
           }
         } else {
-          pos += pattern.size();
+          pos += pat.size();
         }
         if (pos > position) {
           continue;
@@ -945,8 +945,7 @@ void Display::SequencerTab::click(unsigned int cell, Display &display) {
       pattern[cell] = pattern[cell] == 0? 1: 0;
       drawSong();
       display.redraw();
-      auto *newSong = new Song(song);
-      display.pepper.sendRequest(UpdateSong { newSong });
+      display.pepper.sendRequest(UpdateSong { new Song(song) });
     }
   }
 }
