@@ -959,10 +959,10 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
 }
 
 void Display::SequencerTab::click(unsigned int cell, Display &display) {
-  if (y > 2 && y < 2 + song.patterns().size()) {
+  if (y >= 3 && y < 3 + song.patterns().size()) {
     auto &pattern = song.patterns()[y - 3];
-    if (cell < pattern.size()) {
-      pattern[cell] = pattern[cell] == 0? 1: 0;
+    if (x+cell < pattern.size()) {
+      pattern[x+cell] = pattern[x+cell] == 0? 1: 0;
       drawSong();
       display.redraw();
       display.pepper.sendRequest(UpdateSong { new Song(song) });
