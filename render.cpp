@@ -43,19 +43,14 @@ enum class ModeIdentifier {
 class Song {
   std::vector<std::vector<int>> pattern;
   std::vector<std::vector<int>> song;
-  unsigned int position = 0;
 public:
   Song() : pattern {
-    {1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 1},
-    {1, 0, 0, 0}
+    {1, 0, 0, 0, 1, 0, 1, 0},
+    {1, 0, 0, 0, 1, 0, 0, 0}
   }, song{
     {1, 1, 1, 1},
     {0, 0}
   } {}
-  void reset() { position = 0; }
-  void next() {
-    position = length() > 0? (position + 1) % length(): 0;
-  }
   unsigned int length() const {
     unsigned int max = 0;
     for (auto const &track: song) {
@@ -69,8 +64,7 @@ public:
     }
     return max;
   }
-  unsigned int getPosition() const noexcept { return position; }
-  template<typename F> void triggers(F f) {
+  template<typename F> void triggersAt(unsigned int position, F f) {
     unsigned int channel = 0;
     for (auto const &track: song) {
       unsigned int pos = 0;
@@ -98,6 +92,12 @@ public:
   }
 };
 
+void save(Song const &song, const std::string& filename) {
+  std::ofstream ofs(filename);
+  boost::archive::text_oarchive oa(ofs);
+  oa << song;
+}
+
 void load(Song &song, const std::string& filename) {
   std::ifstream ifs(filename);
   if (ifs.good()) {
@@ -105,9 +105,7 @@ void load(Song &song, const std::string& filename) {
     ia >> song;
   } else {
     std::cout << filename << " does not exist, saving..." << std::endl;
-    std::ofstream ofs(filename);
-    boost::archive::text_oarchive oa(ofs);
-    oa << song;
+    save(song, filename);
   }
 }
 
@@ -279,14 +277,18 @@ class Display {
     }
     void operator()(Song const *song) {
       this->song = *song;
+      drawSong();
+    }
+    void drawSong() {
       lines.resize(2);
       for (auto const &pattern: this->song.patterns()) {
         std::string rep;
         for (auto v: pattern) {
           char c = ' ';
-          if (v == 1) { c = '%';
-          
-}rep += c;
+          if (v == 1) {
+	    c = '%';
+          }
+	  rep += c;
         }
         lines.emplace_back(rep);
       }
@@ -670,12 +672,13 @@ class Sequencer final : public Mode {
   EdgeDetect<float> clockRising, resetRising;
   Clock clock;
   Song song;
+  unsigned int position = 0;
   std::vector<AnalogOut> analogOut;
 public:
   Sequencer(Pepper &pepper, BelaContext *bela)
   : Mode(pepper)
   , clockRising(0.2), resetRising(0.2)
-   
+  , position(0)
   {
     load(song, "default.pepper");
     pepper.updateDisplay(Message { SongLoaded { &song } });
@@ -688,19 +691,20 @@ public:
   void deactivate() override {}
   void setSong(Song *newSong) {
     song = std::move(*newSong);
+    position = std::min(position, song.length());
   }
   void run(BelaContext *bela) override {
     for (unsigned int frame = 0; frame < bela->analogFrames; ++frame) {
       if (resetRising(analogIn<1>(bela)[frame])) {
-        song.reset();
+        position = 0;
       }
       if (clockRising(analogIn<0>(bela)[frame])) {
         clock.tick(frame);
-        song.triggers([this, frame](unsigned int channel) {
+        song.triggersAt(position, [this, frame](unsigned int channel) {
           analogOut[channel].set_for(frame, 0.9, 1ms);
         });
-        pepper.updateDisplay(Message { PositionChanged { song.getPosition() } });
-        song.next();
+        pepper.updateDisplay(Message { PositionChanged { position } });
+        position = song.length() > 0? (position + 1) % song.length(): 0;
       }
     }
     for (auto &channel: analogOut) {
@@ -939,6 +943,8 @@ void Display::SequencerTab::click(unsigned int cell, Display &display) {
     auto &pattern = song.patterns()[y - 3];
     if (cell < pattern.size()) {
       pattern[cell] = pattern[cell] == 0? 1: 0;
+      drawSong();
+      display.redraw();
       auto *newSong = new Song(song);
       display.pepper.sendRequest(UpdateSong { newSong });
     }
@@ -952,7 +958,7 @@ void Pepper::render(BelaContext *bela) {
     switch (size) {
     case sizeof(Request): {
       Request req;
-      memcpy(&req, buffer, size);
+      std::memcpy(&req, buffer, size);
       requestReceived(req);
       break;
     }
