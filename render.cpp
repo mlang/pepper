@@ -186,11 +186,12 @@ class Display {
   }
   int fd = -1;
   bool connected = false;
+  unsigned int width = 0;
   bool connect();
-  int width = 0;
   void writeText(std::string const &text, int cursor) {
     if (connected) {
-      brlapi__writeText(handle(), cursor > width? width: cursor, text.c_str());
+      brlapi__writeText(handle(), cursor > static_cast<int>(width)? width: cursor,
+			text.c_str());
     }
   }
   RTPipe updatePipe;
@@ -221,7 +222,11 @@ class Display {
         display.writeText(name, BRLAPI_CURSOR_OFF);
       } else {
         auto const &line = lines[y - 1];
-        display.writeText(line.text, line.cursor);
+        display.writeText(
+	  line.text.substr(std::min(static_cast<std::string::size_type>(x),
+				    line.text.length())),
+	  line.cursor
+	);
       }
     }
     unsigned int line() const { return y; }
@@ -236,6 +241,16 @@ class Display {
         y += 1;
         draw(display);
       }
+    }
+    void windowLeft(Display &display) {
+      if (x > 0) {
+        x -= std::min(display.width, x);
+        draw(display);
+      }
+    }
+    void windowRight(Display &display) {
+      x += display.width;
+      draw(display);
     }
   };
   class AnalogueOscillatorTab : public TabBase {
@@ -319,6 +334,7 @@ class Display {
       tabs[static_cast<int>(ModeIdentifier::Sequencer)]
     );
   }
+  friend class TabBase;
 public:
   explicit Display(Pepper &pepper);
   ~Display() {
@@ -905,13 +921,17 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
         if (mpark::visit([](auto const &tab) { return tab.line(); }, currentTab())
             == 0) {
           pepper.sendCommand(Command::PrevPlugin);
-        }
+        } else {
+	  mpark::visit([this](auto &tab) { tab.windowLeft(*this); }, currentTab());
+	}
         return;
       case BRLAPI_KEY_CMD_FWINRT:
         if (mpark::visit([](auto const &tab) { return tab.line(); }, currentTab())
             == 0) {
           pepper.sendCommand(Command::NextPlugin);
-        }
+        } else {
+	  mpark::visit([this](auto &tab) { tab.windowRight(*this); }, currentTab());
+	}
         return;
       case BRLAPI_KEY_CMD_LNUP:
         mpark::visit([this](auto &tab) { tab.lineUp(*this); }, currentTab());
