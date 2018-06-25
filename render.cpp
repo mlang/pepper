@@ -45,7 +45,7 @@ class Song {
   std::vector<std::vector<int>> song;
 public:
   Song() : pattern {
-    {1, 0, 0, 0, 1, 0, 1, 0},
+    {1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0},
     {1, 0, 0, 0, 1, 0, 0, 0}
   }, song{
     {1, 1, 1, 1},
@@ -185,8 +185,8 @@ class Display {
     );
   }
   int fd = -1;
-  bool connected = false;
   unsigned int width = 0;
+  bool connected = false;
   bool connect();
   void writeText(std::string const &text, int cursor) {
     if (connected) {
