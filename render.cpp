@@ -90,7 +90,7 @@ public:
           pos += pat.size();
         }
         if (pos > position) {
-          continue;
+          break;
         }
       }
       channel += 1;
@@ -155,7 +155,9 @@ struct SongUpdated {
 };
 
 using Message = variant<
-  ModeChanged, LevelsChanged, TempoChanged, SongLoaded, PositionChanged, SongUpdated
+  ModeChanged,
+  LevelsChanged,
+  TempoChanged, SongLoaded, PositionChanged, SongUpdated
 >;
 
 constexpr int nPins = 4;
@@ -202,7 +204,8 @@ class Display {
   bool connect();
   void writeText(string const &text, int cursor) {
     if (connected) {
-      brlapi__writeText(handle(), cursor > static_cast<int>(width)? width: cursor,
+      brlapi__writeText(handle(),
+			cursor > static_cast<int>(width)? BRLAPI_CURSOR_OFF: cursor,
                         text.c_str());
     }
   }
