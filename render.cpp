@@ -32,6 +32,18 @@
 //-*--*---*----*-----*------*-------*--------*-------*------*-----*----*---*--*-//
 
 using namespace std::literals::chrono_literals;
+using boost::archive::text_iarchive;
+using boost::archive::text_oarchive;
+using boost::hana::overload;
+using boost::none;
+using boost::optional;
+using mpark::variant;                   // for TriviallyCopyable variants
+using mpark::visit;
+using std::make_unique;
+using std::string;
+using std::to_string;
+using std::vector;
+using std::unique_ptr;
 
 namespace {
 
@@ -41,8 +53,8 @@ enum class ModeIdentifier {
 };
 
 class Song {
-  std::vector<std::vector<int>> pattern;
-  std::vector<std::vector<int>> song;
+  vector<vector<int>> pattern;
+  vector<vector<int>> song;
 public:
   Song() : pattern {
     {1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0},
@@ -84,7 +96,7 @@ public:
       channel += 1;
     }
   }
-  std::vector<std::vector<int>> &patterns() { return pattern; }
+  vector<vector<int>> &patterns() { return pattern; }
   template<typename Archive>
   void serialize(Archive &archive, unsigned int /*version*/) {
     archive & pattern;
@@ -92,16 +104,16 @@ public:
   }
 };
 
-void save(Song const &song, const std::string& filename) {
+void save(Song const &song, string const &filename) {
   std::ofstream ofs(filename);
-  boost::archive::text_oarchive oa(ofs);
+  text_oarchive oa(ofs);
   oa << song;
 }
 
-void load(Song &song, const std::string& filename) {
+void load(Song &song, string const &filename) {
   std::ifstream ifs(filename);
   if (ifs.good()) {
-    boost::archive::text_iarchive ia(ifs);
+    text_iarchive ia(ifs);
     ia >> song;
   } else {
     std::cout << filename << " does not exist, saving..." << std::endl;
@@ -115,7 +127,7 @@ struct UpdateSong {
   Song *pointer;
 };
 
-using Request = mpark::variant<Command, UpdateSong>;
+using Request = variant<Command, UpdateSong>;
 
 struct ModeChanged {
   ModeIdentifier mode;
@@ -142,7 +154,7 @@ struct SongUpdated {
   Song *pointer;
 };
 
-using Message = mpark::variant<
+using Message = variant<
   ModeChanged, LevelsChanged, TempoChanged, SongLoaded, PositionChanged, SongUpdated
 >;
 
@@ -178,7 +190,7 @@ public:
 class Pepper;
 
 class Display {
-  std::unique_ptr<char[]> brlapiHandle;
+  unique_ptr<char[]> brlapiHandle;
   brlapi_handle_t *handle() {
     return static_cast<brlapi_handle_t *>(
       static_cast<void *>(brlapiHandle.get())
@@ -188,7 +200,7 @@ class Display {
   unsigned int width = 0;
   bool connected = false;
   bool connect();
-  void writeText(std::string const &text, int cursor) {
+  void writeText(string const &text, int cursor) {
     if (connected) {
       brlapi__writeText(handle(), cursor > static_cast<int>(width)? width: cursor,
                         text.c_str());
@@ -199,21 +211,21 @@ class Display {
   void keyPressed(brlapi_keyCode_t keyCode);
   Pepper &pepper;
   class Tab {
-    std::string name;
+    string name;
   protected:
     unsigned int x = 0, y = 0;
     struct LineInfo {
-      std::string text;
-      boost::optional<int> cursor;
+      string text;
+      optional<int> cursor;
 
       LineInfo() = default;
       explicit LineInfo(
-        std::string text, boost::optional<int> cursor = boost::none
+        string text, optional<int> cursor = none
       ) : text(std::move(text)), cursor(cursor) {}
     };
-    std::vector<LineInfo> lines;
+    vector<LineInfo> lines;
   public:
-    explicit Tab(std::string name, size_t lines = 0)
+    explicit Tab(string name, size_t lines = 0)
     : name(std::move(name))
     , lines(lines)
     {}
@@ -223,7 +235,7 @@ class Display {
       } else {
         auto const &line = lines[y - 1];
         auto const text = line.text.substr(
-          std::min(static_cast<std::string::size_type>(x), line.text.length())
+          std::min(static_cast<string::size_type>(x), line.text.length())
         );
         int cursor = BRLAPI_CURSOR_OFF;
         if (line.cursor) {
@@ -274,13 +286,12 @@ class Display {
   public:
     LevelMeterTab() : Tab("metering...", 12) {}
     void operator()(LevelsChanged const &level) {
-      lines[0].text = "L: " + std::to_string(level.l);
-      lines[1].text = "R: " + std::to_string(level.r);
-      lines[2].text = "PeakL: " + std::to_string(level.lp);
-      lines[3].text = "PeakR: " + std::to_string(level.rp);
+      lines[0].text = "L: " + to_string(level.l);
+      lines[1].text = "R: " + to_string(level.r);
+      lines[2].text = "PeakL: " + to_string(level.lp);
+      lines[3].text = "PeakR: " + to_string(level.rp);
       for (unsigned long i = 0; i < 8; i++) {
-        lines[i+4].text = "A" + std::to_string(i) + ": " +
-          std::to_string(level.analog[i]);
+        lines[i+4].text = "A" + to_string(i) + ": " + to_string(level.analog[i]);
       }
     }
     void click(unsigned int /*cell*/, Display & /*display*/) override {}
@@ -294,7 +305,7 @@ class Display {
         lines[0].text = "Not running";
       } else {
         lines[0].text = "BPM: " +
-          std::to_string(static_cast<int>(std::round(tempo.bpm)));
+          to_string(static_cast<int>(std::round(tempo.bpm)));
       }
     }
     void operator()(Song const *song) {
@@ -304,7 +315,7 @@ class Display {
     void drawSong() {
       lines.resize(2);
       for (auto const &pattern: this->song.patterns()) {
-        std::string rep;
+        string rep;
         for (auto v: pattern) {
           char c = ' ';
           if (v == 1) {
@@ -320,7 +331,7 @@ class Display {
     }
     void click(unsigned int cell, Display &display) override;
   };
-  std::vector<std::unique_ptr<Tab>> tabs;
+  vector<unique_ptr<Tab>> tabs;
   ModeIdentifier currentMode = ModeIdentifier::Sequencer;
   Tab &currentTab() { return *tabs[static_cast<int>(currentMode)]; }
   void redraw() {
@@ -355,7 +366,7 @@ class Mode;
 
 class Pepper : Salt {
   Lilv::World lilv;
-  std::vector<std::unique_ptr<Mode>> plugins;
+  vector<unique_ptr<Mode>> plugins;
   int index = -1;
   Display braille;
   DigitalChannelManager digital;
@@ -446,7 +457,7 @@ LV2_Feature *features[3] = {
 class LV2Plugin : public Mode {
 protected:
   Lilv::Instance *instance;
-  std::vector<float> minValue, maxValue, defValue, value;
+  vector<float> minValue, maxValue, defValue, value;
 public:
   LV2Plugin(Pepper &pepper, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
   : Mode(pepper)
@@ -574,7 +585,7 @@ class AudioLevelMeter : public Mode {
       }
     }
   };
-  std::vector<AudioChannel> audio;
+  vector<AudioChannel> audio;
   unsigned int blockCount = 0;
   static constexpr float const localDecayRate = 0.99, peakDecayRate = 0.999;
 public:
@@ -656,8 +667,8 @@ public:
 };
 
 class Clock {
-  boost::optional<int> offset;
-  boost::optional<int> length;
+  optional<int> offset;
+  optional<int> length;
 public:
   void tick(unsigned int frame) {
     offset = frame;
@@ -673,13 +684,13 @@ public:
             4.0f);
       }
       length = bela->analogFrames - offset.value();
-      offset = boost::none;
+      offset = none;
     } else {
       if (length) {
         length = length.value() + bela->analogFrames;
         if (length.value() > bela->analogSampleRate) {
           bpm(0.0f);
-          length = boost::none;
+          length = none;
         }
       }
     }
@@ -691,7 +702,7 @@ class Sequencer final : public Mode {
   Clock clock;
   Song song;
   unsigned int position = 0;
-  std::vector<AnalogOut> analogOut;
+  vector<AnalogOut> analogOut;
 public:
   Sequencer(Pepper &pepper, BelaContext *bela)
   : Mode(pepper)
@@ -748,8 +759,8 @@ Pepper::Pepper(BelaContext *bela)
   digital.setCallbackArgument(buttonPins[3], this);
   digital.manage(buttonPins[3], INPUT, true);
 
-  plugins.emplace_back(new Sequencer(*this, bela));
-  plugins.emplace_back(new AudioLevelMeter(*this, bela));
+  plugins.push_back(make_unique<Sequencer>(*this, bela));
+  plugins.emplace_back(make_unique<AudioLevelMeter>(*this, bela));
 
   lilv.load_all();
   auto lv2plugins = lilv.get_all_plugins();
@@ -758,10 +769,10 @@ Pepper::Pepper(BelaContext *bela)
     auto name = Lilv::Node(lv2plugin.get_name());
     auto uri = Lilv::Node(lv2plugin.get_uri());
     if (uri.is_uri() && strcmp(uri.as_string(), AnalogueOscillator::uri) == 0) {
-      plugins.emplace_back(new AnalogueOscillator(*this, bela, lilv, lv2plugin));
+      plugins.push_back(make_unique<AnalogueOscillator>(*this, bela, lilv, lv2plugin));
       std::cout << "Loaded " << name.as_string() << std::endl;
     } else if (uri.is_uri() && strcmp(uri.as_string(), FMOscillator::uri) == 0) {
-      plugins.emplace_back(new FMOscillator(*this, bela, lilv, lv2plugin));
+      plugins.push_back(make_unique<FMOscillator>(*this, bela, lilv, lv2plugin));
       std::cout << "Loaded " << name.as_string() << std::endl;
     }
   }
@@ -776,8 +787,8 @@ Pepper::Pepper(BelaContext *bela)
 }
 
 void Pepper::requestReceived(Request &req) {
-  mpark::visit(
-    boost::hana::overload(
+  visit(
+    overload(
       [this](Command cmd) {
         switch (cmd) {
         case Command::PrevPlugin:
@@ -819,16 +830,16 @@ Display::Display(Pepper &pepper)
   for (int i = 0; i < modes; ++i) {
     switch (ModeIdentifier(i)) {
     case ModeIdentifier::AnalogueOscillator:
-      tabs.push_back(std::make_unique<AnalogueOscillatorTab>());
+      tabs.push_back(make_unique<AnalogueOscillatorTab>());
       break;
     case ModeIdentifier::AudioLevelMeter:
-      tabs.push_back(std::make_unique<LevelMeterTab>());
+      tabs.push_back(make_unique<LevelMeterTab>());
       break;
     case ModeIdentifier::FMOscillator:
-      tabs.push_back(std::make_unique<FMOscillatorTab>());
+      tabs.push_back(make_unique<FMOscillatorTab>());
       break;
     case ModeIdentifier::Sequencer:
-      tabs.push_back(std::make_unique<SequencerTab>());
+      tabs.push_back(make_unique<SequencerTab>());
       break;
     }
   }
@@ -886,8 +897,8 @@ void Display::doPoll() {
         Message msg;
         if (read(updatePipe.fileDescriptor(), &msg, sizeof(Message)) ==
             sizeof(Message)) {
-          mpark::visit(
-            boost::hana::overload(
+          visit(
+            overload(
               [this](ModeChanged const &changed) {
                 currentMode = changed.mode;
               },
@@ -994,7 +1005,7 @@ Pepper::~Pepper() {
 
 // Bela
 
-static std::unique_ptr<Pepper> p;
+static unique_ptr<Pepper> p;
 
 void Bela_userSettings(BelaInitSettings *settings)
 {
@@ -1009,7 +1020,7 @@ bool setup(BelaContext *bela, void * /*userData*/)
     return false;
   }
   try {
-    p = std::make_unique<Pepper>(bela);
+    p = make_unique<Pepper>(bela);
   } catch (std::exception &e) {
     std::cerr << e.what() << std::endl;
   }
