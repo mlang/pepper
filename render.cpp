@@ -191,29 +191,29 @@ class Display {
   void writeText(std::string const &text, int cursor) {
     if (connected) {
       brlapi__writeText(handle(), cursor > static_cast<int>(width)? width: cursor,
-			text.c_str());
+                        text.c_str());
     }
   }
   RTPipe updatePipe;
   void doPoll();
   void keyPressed(brlapi_keyCode_t keyCode);
   Pepper &pepper;
-  class TabBase {
+  class Tab {
     std::string name;
   protected:
     unsigned int x = 0, y = 0;
     struct LineInfo {
       std::string text;
-      int cursor = BRLAPI_CURSOR_OFF;
+      boost::optional<int> cursor;
 
       LineInfo() = default;
       explicit LineInfo(
-        std::string text, int cursor = BRLAPI_CURSOR_OFF
+        std::string text, boost::optional<int> cursor = boost::none
       ) : text(std::move(text)), cursor(cursor) {}
     };
     std::vector<LineInfo> lines;
   public:
-    explicit TabBase(std::string name, size_t lines = 0)
+    explicit Tab(std::string name, size_t lines = 0)
     : name(std::move(name))
     , lines(lines)
     {}
@@ -222,11 +222,17 @@ class Display {
         display.writeText(name, BRLAPI_CURSOR_OFF);
       } else {
         auto const &line = lines[y - 1];
-        display.writeText(
-	  line.text.substr(std::min(static_cast<std::string::size_type>(x),
-				    line.text.length())),
-	  line.cursor
-	);
+        auto const text = line.text.substr(
+          std::min(static_cast<std::string::size_type>(x), line.text.length())
+        );
+        int cursor = BRLAPI_CURSOR_OFF;
+        if (line.cursor) {
+          int cell = line.cursor.value() - x;
+          if (cell >= 0 && cell < static_cast<int>(display.width)) {
+            cursor = cell + 1;
+          }
+        }
+        display.writeText(text, cursor);
       }
     }
     unsigned int line() const { return y; }
@@ -252,20 +258,21 @@ class Display {
       x += display.width;
       draw(display);
     }
+    virtual void click(unsigned int /*cell*/, Display & /*display*/);
   };
-  class AnalogueOscillatorTab : public TabBase {
+  class AnalogueOscillatorTab : public Tab {
   public:
-    AnalogueOscillatorTab() : TabBase("AnalogueOsc") {}
+    AnalogueOscillatorTab() : Tab("AnalogueOsc") {}
     void click(unsigned int /*cell*/, Display & /*display*/) {}
   };
-  class FMOscillatorTab : public TabBase {
+  class FMOscillatorTab : public Tab {
   public:
-    FMOscillatorTab() : TabBase("FMOsc") {}
+    FMOscillatorTab() : Tab("FMOsc") {}
     void click(unsigned int /*cell*/, Display & /*display*/) {}
   };
-  class LevelMeterTab : public TabBase {
+  class LevelMeterTab : public Tab {
   public:
-    LevelMeterTab() : TabBase("metering...", 12) {}
+    LevelMeterTab() : Tab("metering...", 12) {}
     void operator()(LevelsChanged const &level) {
       lines[0].text = "L: " + std::to_string(level.l);
       lines[1].text = "R: " + std::to_string(level.r);
@@ -276,12 +283,12 @@ class Display {
           std::to_string(level.analog[i]);
       }
     }
-    void click(unsigned int /*cell*/, Display & /*display*/) {}
+    void click(unsigned int /*cell*/, Display & /*display*/) override {}
   };
-  class SequencerTab : public TabBase {
+  class SequencerTab : public Tab {
     Song song;
   public:
-    SequencerTab() : TabBase("Sequencer", 2) {}
+    SequencerTab() : Tab("Sequencer", 2) {}
     void operator()(TempoChanged const &tempo) {
       if (tempo.bpm == 0.0f) {
         lines[0].text = "Not running";
@@ -301,40 +308,35 @@ class Display {
         for (auto v: pattern) {
           char c = ' ';
           if (v == 1) {
-	    c = '%';
+            c = '%';
           }
-	  rep += c;
+          rep += c;
         }
         lines.emplace_back(rep);
       }
     }
     void operator()(PositionChanged const &changed) {
-      lines[1].cursor = changed.position + 1;
-      lines[1].text = std::string(changed.position, ' ') + '=';
+      lines[1].cursor = changed.position;
     }
-    void click(unsigned int cell, Display &display);
+    void click(unsigned int cell, Display &display) override;
   };
-  using Tab = mpark::variant<
-    AnalogueOscillatorTab, FMOscillatorTab,
-    LevelMeterTab, SequencerTab
-  >;
-  std::vector<Tab> tabs;
+  std::vector<std::unique_ptr<Tab>> tabs;
   ModeIdentifier currentMode = ModeIdentifier::Sequencer;
-  Tab &currentTab() { return tabs[static_cast<int>(currentMode)]; }
+  Tab &currentTab() { return *tabs[static_cast<int>(currentMode)]; }
   void redraw() {
-    mpark::visit([this](auto &tab) { tab.draw(*this); }, currentTab());
+    currentTab().draw(*this);
   }
   LevelMeterTab &levelMeterTab() {
-    return mpark::get<LevelMeterTab>(
-      tabs[static_cast<int>(ModeIdentifier::AudioLevelMeter)]
+    return dynamic_cast<LevelMeterTab&>(
+      *tabs[static_cast<int>(ModeIdentifier::AudioLevelMeter)]
     );
   }
   SequencerTab &sequencerTab() {
-    return mpark::get<SequencerTab>(
-      tabs[static_cast<int>(ModeIdentifier::Sequencer)]
+    return dynamic_cast<SequencerTab&>(
+      *tabs[static_cast<int>(ModeIdentifier::Sequencer)]
     );
   }
-  friend class TabBase;
+  friend class Tab;
 public:
   explicit Display(Pepper &pepper);
   ~Display() {
@@ -767,9 +769,10 @@ Pepper::Pepper(BelaContext *bela)
   if (!this->plugins.empty()) {
     index = 0;
   }
-  for (auto &plugin: plugins) { plugin->activate();
+  for (auto &plugin: plugins) {
+    plugin->activate();
+  }
   modeChanged();
-}
 }
 
 void Pepper::requestReceived(Request &req) {
@@ -816,16 +819,16 @@ Display::Display(Pepper &pepper)
   for (int i = 0; i < modes; ++i) {
     switch (ModeIdentifier(i)) {
     case ModeIdentifier::AnalogueOscillator:
-      tabs.push_back(AnalogueOscillatorTab{});
+      tabs.push_back(std::make_unique<AnalogueOscillatorTab>());
       break;
     case ModeIdentifier::AudioLevelMeter:
-      tabs.push_back(LevelMeterTab{});
+      tabs.push_back(std::make_unique<LevelMeterTab>());
       break;
     case ModeIdentifier::FMOscillator:
-      tabs.push_back(FMOscillatorTab{});
+      tabs.push_back(std::make_unique<FMOscillatorTab>());
       break;
     case ModeIdentifier::Sequencer:
-      tabs.push_back(SequencerTab{});
+      tabs.push_back(std::make_unique<SequencerTab>());
       break;
     }
   }
@@ -857,7 +860,7 @@ void Display::doPoll() {
     { updatePipe.open(), POLLIN, 0 }
   };
 
-  while (gShouldStop == 0) {
+  while (!gShouldStop) {
     int ret = ::poll(fds, std::distance(std::begin(fds), std::end(fds)),
                      std::chrono::milliseconds(10).count());
     if (ret < 0) {
@@ -918,32 +921,27 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
     case BRLAPI_KEY_TYPE_CMD:
       switch (key.command) {
       case BRLAPI_KEY_CMD_FWINLT:
-        if (mpark::visit([](auto const &tab) { return tab.line(); }, currentTab())
-            == 0) {
+        if (currentTab().line() == 0) {
           pepper.sendCommand(Command::PrevPlugin);
         } else {
-	  mpark::visit([this](auto &tab) { tab.windowLeft(*this); }, currentTab());
-	}
+          currentTab().windowLeft(*this);
+        }
         return;
       case BRLAPI_KEY_CMD_FWINRT:
-        if (mpark::visit([](auto const &tab) { return tab.line(); }, currentTab())
-            == 0) {
+        if (currentTab().line() == 0) {
           pepper.sendCommand(Command::NextPlugin);
         } else {
-	  mpark::visit([this](auto &tab) { tab.windowRight(*this); }, currentTab());
-	}
+          currentTab().windowRight(*this);
+        }
         return;
       case BRLAPI_KEY_CMD_LNUP:
-        mpark::visit([this](auto &tab) { tab.lineUp(*this); }, currentTab());
+        currentTab().lineUp(*this);
         return;
       case BRLAPI_KEY_CMD_LNDN:
-        mpark::visit([this](auto &tab) { return tab.lineDown(*this); },
-                     currentTab());
+        currentTab().lineDown(*this);
         return;
       case BRLAPI_KEY_CMD_ROUTE:
-        mpark::visit(
-	  [this, &key](auto &tab) { tab.click(key.argument, *this); },
-	  currentTab());
+        currentTab().click(key.argument, *this);
         return;
       default:
         break;
