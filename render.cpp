@@ -1,3 +1,5 @@
+// Pepper -- Braille display support for the Salt programmable eurorack module
+//
 // Copyright Mario Lang, 2018
 //
 // Distributed under the Boost Software License, Version 1.0.
@@ -16,6 +18,7 @@
 #include <boost/hana/functional/overload.hpp>
 #include <boost/optional.hpp>
 #include <boost/serialization/vector.hpp>
+#include <boost/units/systems/si/electric_potential.hpp>
 #include <brlapi.h>
 #include <chrono>
 #include <cmath>
@@ -42,8 +45,19 @@ using mpark::visit;
 using std::make_unique;
 using std::string;
 using std::to_string;
-using std::vector;
 using std::unique_ptr;
+using std::vector;
+
+// No locks are used at all.  Instead, all communication between the RT and
+// non-RT thread is done via (typed) messages.  The RT thread uses a pipe to
+// wake up the non-RT thread, while the non-RT thread uses a RT Queue to notify
+// the RT thread that things need to change.  A (trivially copyable) variant is
+// used to handle different types of requests (non-RT -> RT) and
+// messages (RT -> non-RT).
+//
+// The RT thread can be in a number of different modes, each of which has a
+// corresponding "tab" in the (non-RT) display thread.  Switching between tabs
+// will automatically activate the corresponding mode.
 
 namespace {
 
@@ -59,7 +73,7 @@ public:
   Song() : pattern {
     {1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0},
     {1, 0, 0, 0, 1, 0, 0, 0}
-  }, song{
+  }, song {
     {1, 1, 1, 1},
     {0, 0}
   } {}
@@ -302,7 +316,9 @@ class Display {
   class SequencerTab : public Tab {
     Song song;
   public:
-    SequencerTab() : Tab("Sequencer", 2) {}
+    SequencerTab() : Tab("Sequencer", 2) {
+      lines[0].text = "Not running";
+    }
     void operator()(TempoChanged const &tempo) {
       if (tempo.bpm == 0.0f) {
         lines[0].text = "Not running";
@@ -572,7 +588,9 @@ class AudioLevelMeter : public Mode {
     Biquad<float> dcblock;
     float localLevel = 0, peakLevel = 0;
 
-    explicit AudioChannel(unsigned int sr) : dcblock(highpass, sr * hertz, 5_Hz, 0.5) {}
+    explicit AudioChannel(unsigned int sr)
+    : dcblock(highpass, sr * hertz, 5_Hz, 0.5)
+    {}
 
     void operator()(float sample) {
       float const level = std::fabs(dcblock(sample));
@@ -639,6 +657,16 @@ template<typename Rep, typename Period> constexpr Rep to_samples(
   return duration.count() * Period::num * sampleRate / Period::den;
 }
 
+using electric_potential = boost::units::quantity<
+  boost::units::si::electric_potential, float
+>;
+
+using boost::units::si::volt;
+ 
+electric_potential operator""_V(long double v) {
+  return float(v) * volt;
+}
+
 class AnalogOut {
   unsigned int channel;
   unsigned int sampleRate;
@@ -648,11 +676,11 @@ public:
   AnalogOut(BelaContext *bela, unsigned int channel)
   : channel(channel), sampleRate(bela->analogSampleRate) {}
   template<typename Rep, typename Period>
-  void set_for(unsigned int frame, float level,
+  void set_for(unsigned int frame, electric_potential level,
                std::chrono::duration<Rep, Period> duration) {
     this->offset = frame;
     this->length = to_samples(duration, sampleRate);
-    this->level = level;
+    this->level = level / (10.0 * volt) + 0.5;
   }
   void run(BelaContext *bela) {
     auto * const samples = analogOut(bela, channel);
@@ -660,9 +688,9 @@ public:
     auto const size = std::min(bela->analogFrames - offset, length);
     auto * const end = begin + size;
 
-    std::fill(samples, begin, 0);
+    std::fill(samples, begin, 0.5);
     std::fill(begin, end, level);
-    std::fill(end, samples + bela->analogFrames, 0);
+    std::fill(end, samples + bela->analogFrames, 0.5);
 
     length -= size;
     offset = 0;
@@ -733,7 +761,7 @@ public:
       if (clockRising(analogIn<0>(bela)[frame])) {
         clock.tick(frame);
         song.triggersAt(position, [this, frame](unsigned int channel) {
-          analogOut[channel].set_for(frame, 0.9, 1ms);
+          analogOut[channel].set_for(frame, 4.0_V, 5ms);
         });
         pepper.updateDisplay(Message { PositionChanged { position } });
         position = song.length() > 0? (position + 1) % song.length(): 0;
@@ -1002,8 +1030,9 @@ void Pepper::render(BelaContext *bela) {
 }
 
 Pepper::~Pepper() {
-  for (auto &plugin: plugins) { plugin->deactivate();
-}
+  for (auto &plugin: plugins) {
+    plugin->deactivate();
+  }
 }
 
 // Bela
