@@ -50,6 +50,7 @@ using units::literals::operator""_ms;
 using units::literals::operator""_Hz;
 using units::literals::operator""_V;
 using units::time::second_t;
+using units::unit_cast;
 using units::voltage::volt_t;
 
 // No locks are used at all.  Instead, all communication between the RT and
@@ -479,20 +480,38 @@ LV2_Feature *features[3] = {
   &hardRTCapable, &fixedBlockSize, nullptr
 };
 
-auto to_frequency(float level,
-		  units::frequency::hertz_t base = 16.3516_Hz,
-		  units::voltage::volt_t octave = 1_V) {
+template<class T, class Compare>
+constexpr T const &clamp(T const &v, T const &lo, T const &hi, Compare comp) {
+  return comp(v, lo)? lo: comp(hi, v)? hi: v;
+}
+
+template<typename T>
+constexpr T const &clamp(T const &v, T const &lo, T const &hi) {
+  return clamp(v, lo, hi, std::less<T>());
+}
+
+inline units::frequency::hertz_t to_frequency(
+  float level,
+  units::frequency::hertz_t base = 16.3516_Hz,
+  units::voltage::volt_t octave = 1_V
+) {
   return base * std::pow(2.0, level / (octave / analogPeakToPeak));
 }
 
-float to_analog(units::frequency::hertz_t freq,
-		units::frequency::hertz_t base = 16.3516_Hz,
-		units::voltage::volt_t octave = 1_V) {
-  return units::math::log2(freq / base) / (analogPeakToPeak / octave);
+inline float to_analog(
+  units::frequency::hertz_t const &freq,
+  units::frequency::hertz_t base = 16.3516_Hz,
+  units::voltage::volt_t octave = 1_V
+) {
+  return clamp(
+    unit_cast<double>(
+      units::math::log2(freq / base) / (analogPeakToPeak / octave) + 0.5
+    ), 0.5, 1.0
+  );
 }
 
-float to_analog(units::voltage::volt_t const &volt) {
-  return volt / analogPeakToPeak + 0.5;
+inline constexpr float to_analog(units::voltage::volt_t const &volt) {
+  return clamp(unit_cast<double>(volt / analogPeakToPeak + 0.5), 0.0, 1.0);
 }
 
 class LV2Plugin : public Mode {
@@ -539,6 +558,7 @@ private:
 };
 
 class AnalogueOscillator final : public LV2Plugin {
+  EWMA<float> freqAverage;
 public:
   static constexpr const char *uri =
     "http://plugin.org.uk/swh-plugins/analogueOsc";
@@ -547,7 +567,8 @@ public:
   }
   AnalogueOscillator
   (Pepper &pepper, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
-  : LV2Plugin(pepper, bela, lilv, p) {
+  : LV2Plugin(pepper, bela, lilv, p)
+  , freqAverage(0.25) {
     auto const count = p.get_num_ports();
     for (unsigned int i = 0; i < count; i++) {
       switch (i) {
@@ -561,7 +582,9 @@ public:
     }
   }
   void run(BelaContext *bela) override {
-    value[1] = units::unit_cast<double>(to_frequency(analogReadNI(bela, 0, 0)));
+    std::for_each(analogIn<0>(bela), analogIn<0>(bela) + bela->analogFrames,
+                  freqAverage);
+    value[1] = unit_cast<float>(to_frequency(freqAverage));
     controlFromAnalog(0, analogReadNI(bela, 0, 1)); // Waveform
     controlFromAnalog(2, analogReadNI(bela, 0, 2)); // Warmth
     controlFromAnalog(3, analogReadNI(bela, 0, 3)); // Instability
