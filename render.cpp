@@ -10,6 +10,7 @@
 #include "RTPipe.h"
 #include "RTQueue.h"
 #include "mpark_variant.h"
+#include "units.h"
 #include <Bela.h>
 #include <DigitalChannelManager.h>
 #include <algorithm>
@@ -20,7 +21,6 @@
 #include <boost/serialization/vector.hpp>
 #include <boost/units/systems/si/electric_potential.hpp>
 #include <brlapi.h>
-#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -34,7 +34,6 @@
 #include <vector>
 //-*--*---*----*-----*------*-------*--------*-------*------*-----*----*---*--*-//
 
-using namespace std::literals::chrono_literals;
 using boost::archive::text_iarchive;
 using boost::archive::text_oarchive;
 using boost::hana::overload;
@@ -47,6 +46,12 @@ using std::string;
 using std::to_string;
 using std::unique_ptr;
 using std::vector;
+using units::frequency::hertz_t;
+using units::literals::operator""_ms;
+using units::literals::operator""_Hz;
+using units::literals::operator""_V;
+using units::time::second_t;
+using units::voltage::volt_t;
 
 // No locks are used at all.  Instead, all communication between the RT and
 // non-RT thread is done via (typed) messages.  The RT thread uses a pipe to
@@ -219,7 +224,7 @@ class Display {
   void writeText(string const &text, int cursor) {
     if (connected) {
       brlapi__writeText(handle(),
-			cursor > static_cast<int>(width)? BRLAPI_CURSOR_OFF: cursor,
+                        cursor > static_cast<int>(width)? BRLAPI_CURSOR_OFF: cursor,
                         text.c_str());
     }
   }
@@ -589,7 +594,7 @@ class AudioLevelMeter : public Mode {
     float localLevel = 0, peakLevel = 0;
 
     explicit AudioChannel(unsigned int sr)
-    : dcblock(highpass, sr * hertz, 5_Hz, 0.5)
+      : dcblock(highpass, hertz_t(sr), 5_Hz, 0.5)
     {}
 
     void operator()(float sample) {
@@ -651,46 +656,37 @@ public:
   }
 };
 
-template<typename Rep, typename Period> constexpr Rep to_samples(
-  std::chrono::duration<Rep, Period> duration, unsigned int sampleRate
-) {
-  return duration.count() * Period::num * sampleRate / Period::den;
-}
-
-using electric_potential = boost::units::quantity<
-  boost::units::si::electric_potential, float
->;
-
-using boost::units::si::volt;
- 
-electric_potential operator""_V(long double v) {
-  return float(v) * volt;
-}
-
 class AnalogOut {
+  hertz_t sampleRate;
   unsigned int channel;
-  unsigned int sampleRate;
+  float zero;
+  float level = zero;
   size_t offset = 0, length = 0;
-  float level{};
-public:
-  AnalogOut(BelaContext *bela, unsigned int channel)
-  : channel(channel), sampleRate(bela->analogSampleRate) {}
-  template<typename Rep, typename Period>
-  void set_for(unsigned int frame, electric_potential level,
-               std::chrono::duration<Rep, Period> duration) {
-    this->offset = frame;
-    this->length = to_samples(duration, sampleRate);
-    this->level = level / (10.0 * volt) + 0.5;
+  static float to_analog(volt_t const &v) {
+    return v / 10.0_V + 0.5;
   }
+public:
+  AnalogOut(BelaContext *bela, unsigned int channel, volt_t zero = 0.0_V)
+  : sampleRate(bela->analogSampleRate)
+  , channel(channel)
+  , zero(to_analog(zero))
+  {}
+
+  void set_for(unsigned int frame, second_t duration, volt_t level = 5.0_V) {
+    this->offset = frame;
+    this->length = sampleRate * duration;
+    this->level = to_analog(level);
+  }
+
   void run(BelaContext *bela) {
     auto * const samples = analogOut(bela, channel);
     auto * const begin = samples + offset;
     auto const size = std::min(bela->analogFrames - offset, length);
     auto * const end = begin + size;
 
-    std::fill(samples, begin, 0.5);
+    std::fill(samples, begin, zero);
     std::fill(begin, end, level);
-    std::fill(end, samples + bela->analogFrames, 0.5);
+    std::fill(end, samples + bela->analogFrames, zero);
 
     length -= size;
     offset = 0;
@@ -705,7 +701,7 @@ public:
     offset = frame;
   }
   template<typename BPM>
-  void run(BelaContext *bela, BPM bpm) {
+  void update(BelaContext *bela, BPM bpm) {
     if (offset) {
       if (length) {
         length = length.value() + offset.value();
@@ -761,7 +757,7 @@ public:
       if (clockRising(analogIn<0>(bela)[frame])) {
         clock.tick(frame);
         song.triggersAt(position, [this, frame](unsigned int channel) {
-          analogOut[channel].set_for(frame, 4.0_V, 5ms);
+            analogOut[channel].set_for(frame, 5_ms, 4.0_V);
         });
         pepper.updateDisplay(Message { PositionChanged { position } });
         position = song.length() > 0? (position + 1) % song.length(): 0;
@@ -770,7 +766,7 @@ public:
     for (auto &channel: analogOut) {
       channel.run(bela);
     }
-    clock.run(bela, [this](float bpm) {
+    clock.update(bela, [this](float bpm) {
       pepper.updateDisplay(Message { TempoChanged { bpm } });
     });
   }
@@ -903,8 +899,7 @@ void Display::doPoll() {
   };
 
   while (!gShouldStop) {
-    int ret = ::poll(fds, std::distance(std::begin(fds), std::end(fds)),
-                     std::chrono::milliseconds(10).count());
+    int ret = ::poll(fds, std::distance(std::begin(fds), std::end(fds)), 10);
     if (ret < 0) {
       perror("poll");
       break;

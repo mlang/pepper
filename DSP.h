@@ -1,9 +1,8 @@
 #ifndef DSP_H_DEFINED
 #define DSP_H_DEFINED
 
+#include "units.h"
 #include <boost/math/constants/constants.hpp>
-#include <boost/units/quantity.hpp>
-#include <boost/units/systems/si/frequency.hpp>
 
 // https://en.wikipedia.org/wiki/Moving_average#Exponential_moving_average
 template<typename T>
@@ -44,19 +43,6 @@ public:
   }
 };
 
-template<typename T>
-using frequency = boost::units::quantity<boost::units::si::frequency, T>;
-
-using boost::units::si::hertz;
-
-frequency<float> operator"" _Hz(unsigned long long v) {
-  return float(v) * hertz;
-}
-
-frequency<float> operator"" _Hz(long double v) {
-  return float(v) * hertz;
-}
-
 class Bandpass {};
 constexpr Bandpass bandpass{};
 class Highpass {};
@@ -82,9 +68,12 @@ public:
   Biquad(T b0, T b1, T b2, T a1, T a2)
   : b0{b0}, b1{b1}, b2{b2}, a1{a1}, a2{a2}, s1{0}, s2{0} {}
 
-  Biquad(Bandpass, frequency<T> sampleRate, frequency<T> cutoff, T q)
+  Biquad(Bandpass,
+	 units::frequency::hertz_t sampleRate,
+	 units::frequency::hertz_t cutoff,
+	 T q)
   : s1{0}, s2{0} {
-    T const k = std::tan(boost::math::constants::pi<T>() * (cutoff / sampleRate));
+    T const k = std::tan(boost::math::constants::pi<T>() * T(cutoff / sampleRate));
     T const k2 = k * k;
     T const norm = T(1) / (T(1) + k / q + k2);
     b0 = k / q * norm;
@@ -94,9 +83,11 @@ public:
     a2 = (T(1) - k / q + k2) * norm;
   }
 
-  Biquad(Highpass, frequency<T> sampleRate, frequency<T> cutoff, T q)
+  Biquad(Highpass,
+	 units::frequency::hertz_t sampleRate,
+	 units::frequency::hertz_t cutoff, T q)
   : s1{0}, s2{0} {
-    T const k = std::tan(boost::math::constants::pi<T>() * (cutoff / sampleRate));
+    T const k = std::tan(boost::math::constants::pi<T>() * T(cutoff / sampleRate));
     T const k2 = k * k;
     T const norm = T(1) / (T(1) + k / q + k2);
     b0 = T(1) * norm;
@@ -106,9 +97,11 @@ public:
     a2 = (T(1) - k / q + k2) * norm;
   }
 
-  Biquad(Highshelf, frequency<T> sampleRate, frequency<T> cutoff, T gain)
+  Biquad(Highshelf,
+	 units::frequency::hertz_t sampleRate,
+	 units::frequency::hertz_t cutoff, T gain)
   : s1{0}, s2{0} {
-    T const k = std::tan(boost::math::constants::pi<T>() * (cutoff / sampleRate));
+    T const k = std::tan(boost::math::constants::pi<T>() * T(cutoff / sampleRate));
     T const k2 = k * k;
     T const v = std::exp(std::fabs(gain) *
                          (T(1) / T(20)) *
@@ -130,9 +123,11 @@ public:
     }
   }
 
-  Biquad(Lowpass, frequency<T> sampleRate, frequency<T> cutoff, T q)
+  Biquad(Lowpass,
+	 units::frequency::hertz_t sampleRate,
+	 units::frequency::hertz_t cutoff, T q)
   : s1{0}, s2{0} {
-    T const k = std::tan(boost::math::constants::pi<T>() * (cutoff / sampleRate));
+    T const k = std::tan(boost::math::constants::pi<T>() * T(cutoff / sampleRate));
     T const k2 = k * k;
     T const norm = T(1) / (T(1) + k / q + k2);
     b0 = k2 * norm;
@@ -142,9 +137,11 @@ public:
     a2 = (T(1) - k / q + k2) * norm;
   }
 
-  Biquad(Lowshelf, frequency<T> sampleRate, frequency<T> cutoff, T gain)
+  Biquad(Lowshelf,
+	 units::frequency::hertz_t sampleRate,
+	 units::frequency::hertz_t cutoff, T gain)
   : s1{0}, s2{0} {
-    T const k = std::tan(boost::math::constants::pi<T>() * (cutoff / sampleRate));
+    T const k = std::tan(boost::math::constants::pi<T>() * T(cutoff / sampleRate));
     T const k2 = k * k;
     T const v = std::exp(std::fabs(gain) *
                          (T(1) / T(20)) *
