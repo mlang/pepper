@@ -19,7 +19,6 @@
 #include <boost/hana/functional/overload.hpp>
 #include <boost/optional.hpp>
 #include <boost/serialization/vector.hpp>
-#include <boost/units/systems/si/electric_potential.hpp>
 #include <brlapi.h>
 #include <cmath>
 #include <cstring>
@@ -65,6 +64,8 @@ using units::voltage::volt_t;
 // will automatically activate the corresponding mode.
 
 namespace {
+
+constexpr auto analogPeakToPeak = 10_V;
 
 enum class ModeIdentifier {
   AnalogueOscillator, FMOscillator,
@@ -478,6 +479,22 @@ LV2_Feature *features[3] = {
   &hardRTCapable, &fixedBlockSize, nullptr
 };
 
+auto to_frequency(float level,
+		  units::frequency::hertz_t base = 16.3516_Hz,
+		  units::voltage::volt_t octave = 1_V) {
+  return base * std::pow(2.0, level / (octave / analogPeakToPeak));
+}
+
+float to_analog(units::frequency::hertz_t freq,
+		units::frequency::hertz_t base = 16.3516_Hz,
+		units::voltage::volt_t octave = 1_V) {
+  return units::math::log2(freq / base) / (analogPeakToPeak / octave);
+}
+
+float to_analog(units::voltage::volt_t const &volt) {
+  return volt / analogPeakToPeak + 0.5;
+}
+
 class LV2Plugin : public Mode {
 protected:
   Lilv::Instance *instance;
@@ -544,7 +561,7 @@ public:
     }
   }
   void run(BelaContext *bela) override {
-    controlFromAnalog(1, analogReadNI(bela, 0, 0)); // Frequency
+    value[1] = units::unit_cast<double>(to_frequency(analogReadNI(bela, 0, 0)));
     controlFromAnalog(0, analogReadNI(bela, 0, 1)); // Waveform
     controlFromAnalog(2, analogReadNI(bela, 0, 2)); // Warmth
     controlFromAnalog(3, analogReadNI(bela, 0, 3)); // Instability
@@ -662,9 +679,6 @@ class AnalogOut {
   float zero;
   float level = zero;
   size_t offset = 0, length = 0;
-  static float to_analog(volt_t const &v) {
-    return v / 10.0_V + 0.5;
-  }
 public:
   AnalogOut(BelaContext *bela, unsigned int channel, volt_t zero = 0.0_V)
   : sampleRate(bela->analogSampleRate)
