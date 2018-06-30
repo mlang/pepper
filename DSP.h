@@ -99,11 +99,12 @@ public:
 
   Biquad(Highshelf,
 	 units::frequency::hertz_t sampleRate,
-	 units::frequency::hertz_t cutoff, T gain)
+	 units::frequency::hertz_t cutoff,
+         units::dimensionless::dB_t gain)
   : s1{0}, s2{0} {
     T const k = std::tan(boost::math::constants::pi<T>() * T(cutoff / sampleRate));
     T const k2 = k * k;
-    T const v = std::exp(std::fabs(gain) *
+    T const v = std::exp(units::math::fabs(gain) *
                          (T(1) / T(20)) *
                          boost::math::constants::ln_ten<T>());
     if (gain >= 0) {
@@ -139,11 +140,12 @@ public:
 
   Biquad(Lowshelf,
 	 units::frequency::hertz_t sampleRate,
-	 units::frequency::hertz_t cutoff, T gain)
+	 units::frequency::hertz_t cutoff,
+         units::dimensionless::dB_t gain)
   : s1{0}, s2{0} {
     T const k = std::tan(boost::math::constants::pi<T>() * T(cutoff / sampleRate));
     T const k2 = k * k;
-    T const v = std::exp(std::fabs(gain) *
+    T const v = std::exp(units::math::fabs(gain) *
                          (T(1) / T(20)) *
                          boost::math::constants::ln_ten<T>());
     if (gain >= 0) {

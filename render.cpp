@@ -9,6 +9,7 @@
 #include "DSP.h"
 #include "RTPipe.h"
 #include "RTQueue.h"
+#include "Salt.h"
 #include "mpark_variant.h"
 #include "units.h"
 #include <Bela.h>
@@ -432,34 +433,6 @@ public:
   }
 };
 
-inline float const *audioIn(BelaContext *bela, unsigned int channel) {
-  return &bela->audioIn[channel * bela->audioFrames];
-}
-
-template<unsigned int channel> float *audioOut(BelaContext *bela) {
-  return &bela->audioOut[channel * bela->audioFrames];
-}
-
-inline float *audioOut(BelaContext *bela, unsigned int channel) {
-  return &bela->audioOut[channel * bela->audioFrames];
-}
-
-template<unsigned int channel> float const *analogIn(BelaContext *bela) {
-  return &bela->analogIn[channel * bela->analogFrames];
-}
-
-inline float const *analogIn(BelaContext *bela, unsigned int channel) {
-  return &bela->analogIn[channel * bela->analogFrames];
-}
-
-template<unsigned int channel> float *analogOut(BelaContext *bela) {
-  return &bela->analogOut[channel * bela->analogFrames];
-}
-
-inline float *analogOut(BelaContext *bela, unsigned int channel) {
-  return &bela->analogOut[channel * bela->analogFrames];
-}
-
 class Mode {
 protected:
   Pepper &pepper;
@@ -479,40 +452,6 @@ LV2_Feature fixedBlockSize = { LV2_BUF_SIZE__fixedBlockLength, nullptr };
 LV2_Feature *features[3] = {
   &hardRTCapable, &fixedBlockSize, nullptr
 };
-
-template<class T, class Compare>
-constexpr T const &clamp(T const &v, T const &lo, T const &hi, Compare comp) {
-  return comp(v, lo)? lo: comp(hi, v)? hi: v;
-}
-
-template<typename T>
-constexpr T const &clamp(T const &v, T const &lo, T const &hi) {
-  return clamp(v, lo, hi, std::less<T>());
-}
-
-inline units::frequency::hertz_t to_frequency(
-  float level,
-  units::frequency::hertz_t base = 16.3516_Hz,
-  units::voltage::volt_t octave = 1_V
-) {
-  return base * std::pow(2.0, level / (octave / analogPeakToPeak));
-}
-
-inline float to_analog(
-  units::frequency::hertz_t const &freq,
-  units::frequency::hertz_t base = 16.3516_Hz,
-  units::voltage::volt_t octave = 1_V
-) {
-  return clamp(
-    unit_cast<double>(
-      units::math::log2(freq / base) / (analogPeakToPeak / octave) + 0.5
-    ), 0.5, 1.0
-  );
-}
-
-inline constexpr float to_analog(units::voltage::volt_t const &volt) {
-  return clamp(unit_cast<double>(volt / analogPeakToPeak + 0.5), 0.0, 1.0);
-}
 
 class LV2Plugin : public Mode {
 protected:
@@ -584,7 +523,8 @@ public:
   void run(BelaContext *bela) override {
     std::for_each(analogIn<0>(bela), analogIn<0>(bela) + bela->analogFrames,
                   freqAverage);
-    value[1] = unit_cast<float>(to_frequency(freqAverage));
+    value[1] = clamp(unit_cast<float>(to_frequency(freqAverage)),
+		     minValue[1], maxValue[1]);
     controlFromAnalog(0, analogReadNI(bela, 0, 1)); // Waveform
     controlFromAnalog(2, analogReadNI(bela, 0, 2)); // Warmth
     controlFromAnalog(3, analogReadNI(bela, 0, 3)); // Instability
