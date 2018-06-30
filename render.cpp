@@ -67,8 +67,6 @@ using units::voltage::volt_t;
 
 namespace {
 
-constexpr auto analogPeakToPeak = 10_V;
-
 enum class ModeIdentifier {
   AnalogueOscillator, FMOscillator,
   AudioLevelMeter, Sequencer
@@ -181,35 +179,6 @@ using Message = variant<
   LevelsChanged,
   TempoChanged, SongLoaded, PositionChanged, SongUpdated
 >;
-
-constexpr int nPins = 4;
-
-constexpr int trigOutPins[nPins] = { 0, 5, 12, 13 };
-constexpr int trigInPins[nPins] = { 15, 14, 1, 3 };
-constexpr int sw1Pin = 6;
-constexpr int ledPins[nPins] = { 2, 4, 8, 9 };
-constexpr int pwmPin = 7;
-constexpr int gNumButtons = nPins;
-
-constexpr int buttonPins[gNumButtons] = {
-  sw1Pin, trigInPins[1], trigInPins[2], trigInPins[3]
-};
-
-class Salt {
-public:
-  explicit Salt(BelaContext *bela) {
-    pinMode(bela, 0, pwmPin, OUTPUT);
-    for(auto pin : trigOutPins) {
-      pinMode(bela, 0, pin, OUTPUT);
-    }
-    for(auto pin : trigInPins) {
-      pinMode(bela, 0, pin, INPUT);
-    }
-    for(auto pin : ledPins) {
-      pinMode(bela, 0, pin, INPUT);
-    }
-  }
-};
 
 class Pepper;
 
@@ -391,7 +360,7 @@ public:
 
 class Mode;
 
-class Pepper : Salt {
+class Pepper {
   Lilv::World lilv;
   vector<unique_ptr<Mode>> plugins;
   int index = -1;
@@ -521,10 +490,11 @@ public:
     }
   }
   void run(BelaContext *bela) override {
-    std::for_each(analogIn<0>(bela), analogIn<0>(bela) + bela->analogFrames,
+    std::for_each(Salt::analogIn<0>(bela),
+		  Salt::analogIn<0>(bela) + bela->analogFrames,
                   freqAverage);
-    value[1] = clamp(unit_cast<float>(to_frequency(freqAverage)),
-		     minValue[1], maxValue[1]);
+    value[1] = Salt::clamp(unit_cast<float>(Salt::to_frequency(freqAverage)),
+			   minValue[1], maxValue[1]);
     controlFromAnalog(0, analogReadNI(bela, 0, 1)); // Waveform
     controlFromAnalog(2, analogReadNI(bela, 0, 2)); // Warmth
     controlFromAnalog(3, analogReadNI(bela, 0, 3)); // Instability
@@ -532,7 +502,8 @@ public:
     instance->run(bela->audioFrames);
 
     // Duplicate output to both channels
-    std::copy_n(audioOut<0>(bela), bela->audioFrames, audioOut<1>(bela));
+    std::copy_n(Salt::audioOut<0>(bela), bela->audioFrames,
+		Salt::audioOut<1>(bela));
   }
 };
 
@@ -564,7 +535,8 @@ public:
     instance->run(bela->audioFrames);
 
     // Duplicate output to both channels
-    std::copy_n(audioOut<0>(bela), bela->audioFrames, audioOut<1>(bela));
+    std::copy_n(Salt::audioOut<0>(bela), bela->audioFrames,
+		Salt::audioOut<1>(bela));
   }
 };
 
@@ -609,9 +581,9 @@ public:
 
   void run(BelaContext *bela) override {
     for (unsigned int channel = 0; channel < bela->audioInChannels; ++channel) {
-      auto * const samples = audioIn(bela, channel);
+      auto * const samples = Salt::audioIn(bela, channel);
       std::for_each(samples, samples + bela->audioFrames, audio[channel]);
-      std::copy_n(samples, bela->audioFrames, audioOut(bela, channel));
+      std::copy_n(samples, bela->audioFrames, Salt::audioOut(bela, channel));
     }
 
     blockCount++;
@@ -646,17 +618,17 @@ public:
   AnalogOut(BelaContext *bela, unsigned int channel, volt_t zero = 0.0_V)
   : sampleRate(bela->analogSampleRate)
   , channel(channel)
-  , zero(to_analog(zero))
+  , zero(Salt::to_analog(zero))
   {}
 
   void set_for(unsigned int frame, second_t duration, volt_t level = 5.0_V) {
     this->offset = frame;
     this->length = sampleRate * duration;
-    this->level = to_analog(level);
+    this->level = Salt::to_analog(level);
   }
 
   void run(BelaContext *bela) {
-    auto * const samples = analogOut(bela, channel);
+    auto * const samples = Salt::analogOut(bela, channel);
     auto * const begin = samples + offset;
     auto const size = std::min(bela->analogFrames - offset, length);
     auto * const end = begin + size;
@@ -728,10 +700,10 @@ public:
   }
   void run(BelaContext *bela) override {
     for (unsigned int frame = 0; frame < bela->analogFrames; ++frame) {
-      if (resetRising(analogIn<1>(bela)[frame])) {
+      if (resetRising(Salt::analogIn<1>(bela)[frame])) {
         position = 0;
       }
-      if (clockRising(analogIn<0>(bela)[frame])) {
+      if (clockRising(Salt::analogIn<0>(bela)[frame])) {
         clock.tick(frame);
         song.triggersAt(position, [this, frame](unsigned int channel) {
             analogOut[channel].set_for(frame, 5_ms, 4.0_V);
@@ -754,14 +726,13 @@ public:
 // Implementation
 
 Pepper::Pepper(BelaContext *bela)
-: Salt(bela)
-, braille(*this)
+: braille(*this)
 , commandQueue("command-queue", 128)
 {
   braille.poll();
   digital.setCallback(digitalChanged);
-  digital.setCallbackArgument(buttonPins[3], this);
-  digital.manage(buttonPins[3], INPUT, true);
+  digital.setCallbackArgument(Salt::buttonPins[3], this);
+  digital.manage(Salt::buttonPins[3], INPUT, true);
 
   plugins.push_back(make_unique<Sequencer>(*this, bela));
   plugins.emplace_back(make_unique<AudioLevelMeter>(*this, bela));
@@ -1018,16 +989,14 @@ void Bela_userSettings(BelaInitSettings *settings)
 
 bool setup(BelaContext *bela, void * /*userData*/)
 {
-  if ((bela->flags & BELA_FLAG_INTERLEAVED) == BELA_FLAG_INTERLEAVED) {
-    std::cerr << "This project only works in non-interleaved mode."
-              << std::endl;
-    return false;
+  if (Salt::setup(bela)) {
+    try {
+      p = make_unique<Pepper>(bela);
+    } catch (std::exception &e) {
+      std::cerr << e.what() << std::endl;
+    }
   }
-  try {
-    p = make_unique<Pepper>(bela);
-  } catch (std::exception &e) {
-    std::cerr << e.what() << std::endl;
-  }
+
   return bool(p);
 }
 
