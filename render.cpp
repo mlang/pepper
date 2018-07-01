@@ -466,7 +466,6 @@ private:
 };
 
 class AnalogueOscillator final : public LV2Plugin {
-  EWMA<float> freqAverage;
 public:
   static constexpr const char *uri =
     "http://plugin.org.uk/swh-plugins/analogueOsc";
@@ -475,8 +474,7 @@ public:
   }
   AnalogueOscillator
   (Pepper &pepper, BelaContext *bela, Lilv::World &lilv, Lilv::Plugin p)
-  : LV2Plugin(pepper, bela, lilv, p)
-  , freqAverage(0.25) {
+  : LV2Plugin(pepper, bela, lilv, p) {
     auto const count = p.get_num_ports();
     for (unsigned int i = 0; i < count; i++) {
       switch (i) {
@@ -490,10 +488,7 @@ public:
     }
   }
   void run(BelaContext *bela) override {
-    std::for_each(Salt::analogIn<0>(bela),
-		  Salt::analogIn<0>(bela) + bela->analogFrames,
-                  freqAverage);
-    value[1] = Salt::clamp(unit_cast<float>(Salt::to_frequency(freqAverage)),
+    value[1] = Salt::clamp(unit_cast<float>(Salt::to_frequency(analogReadNI(bela, 0, 0))),
 			   minValue[1], maxValue[1]);
     controlFromAnalog(0, analogReadNI(bela, 0, 1)); // Waveform
     controlFromAnalog(2, analogReadNI(bela, 0, 2)); // Warmth
