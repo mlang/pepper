@@ -107,7 +107,7 @@ public:
     T const v = std::exp(units::math::fabs(gain) *
                          (T(1) / T(20)) *
                          boost::math::constants::ln_ten<T>());
-    if (gain >= 0) {
+    if (gain >= 0.0) {
       T const norm = T(1) / (T(1) + boost::math::constants::root_two<T>() * k + k2);
       b0 = (v + std::sqrt(T(2) * v) * k + k2) * norm;
       b1 = T(2) * (k2 - v) * norm;
@@ -148,7 +148,7 @@ public:
     T const v = std::exp(units::math::fabs(gain) *
                          (T(1) / T(20)) *
                          boost::math::constants::ln_ten<T>());
-    if (gain >= 0) {
+    if (gain >= 0.0) {
       T const norm = T(1) / (T(1) + boost::math::constants::root_two<T>() * k + k2);
       b0 = (T(1) + std::sqrt(T(2) * v) * k + v * k2) * norm;
       b1 = T(2) * (v * k2 - T(1)) * norm;

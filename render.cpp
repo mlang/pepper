@@ -264,7 +264,7 @@ class Display {
       x += display.width;
       draw(display);
     }
-    virtual void click(unsigned int /*cell*/, Display & /*display*/);
+    virtual void click(unsigned int /*cell*/, Display & /*display*/) {};
   };
   class AnalogueOscillatorTab : public Tab {
   public:
