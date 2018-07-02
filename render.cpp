@@ -32,6 +32,7 @@
 #include <sstream>
 #include <utility>
 #include <vector>
+#include <X11/keysym.h>
 //-*--*---*----*-----*------*-------*--------*-------*------*-----*----*---*--*-//
 
 using boost::archive::text_iarchive;
@@ -326,6 +327,9 @@ class Display {
       lines[1].cursor = changed.position;
     }
     void click(unsigned int cell, Display &display) override;
+    void saveSong() const {
+      save(song, "default.pepper");
+    }
   };
   vector<unique_ptr<Tab>> tabs;
   ModeIdentifier currentMode = ModeIdentifier::Sequencer;
@@ -489,7 +493,7 @@ public:
   }
   void run(BelaContext *bela) override {
     value[1] = Salt::clamp(unit_cast<float>(Salt::to_frequency(analogReadNI(bela, 0, 0))),
-			   minValue[1], maxValue[1]);
+                           minValue[1], maxValue[1]);
     controlFromAnalog(0, analogReadNI(bela, 0, 1)); // Waveform
     controlFromAnalog(2, analogReadNI(bela, 0, 2)); // Warmth
     controlFromAnalog(3, analogReadNI(bela, 0, 3)); // Instability
@@ -498,7 +502,7 @@ public:
 
     // Duplicate output to both channels
     std::copy_n(Salt::audioOut<0>(bela), bela->audioFrames,
-		Salt::audioOut<1>(bela));
+                Salt::audioOut<1>(bela));
   }
 };
 
@@ -531,7 +535,7 @@ public:
 
     // Duplicate output to both channels
     std::copy_n(Salt::audioOut<0>(bela), bela->audioFrames,
-		Salt::audioOut<1>(bela));
+                Salt::audioOut<1>(bela));
   }
 };
 
@@ -923,6 +927,21 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
       case BRLAPI_KEY_CMD_ROUTE:
         currentTab().click(key.argument, *this);
         return;
+      default:
+        break;
+      }
+      break;
+    case BRLAPI_KEY_TYPE_SYM:
+      switch (key.command) {
+      case 0: // LATIN1
+        switch (key.argument) {
+        case XK_s:
+          sequencerTab().saveSong();
+          return;
+        default:
+          break;
+        }
+        break;
       default:
         break;
       }
