@@ -17,7 +17,9 @@
 #include <algorithm>
 #include <boost/archive/text_iarchive.hpp>
 #include <boost/archive/text_oarchive.hpp>
+#include <boost/circular_buffer.hpp>
 #include <boost/hana/functional/overload.hpp>
+#include <boost/math/constants/constants.hpp>
 #include <boost/optional.hpp>
 #include <boost/serialization/vector.hpp>
 #include <brlapi.h>
@@ -37,6 +39,7 @@
 
 using boost::archive::text_iarchive;
 using boost::archive::text_oarchive;
+template<typename T> auto const pi = boost::math::constants::pi<T>();
 using boost::hana::overload;
 using boost::none;
 using boost::optional;
@@ -607,34 +610,91 @@ public:
   }
 };
 
+namespace interpolate {
+  float none(float) { return 0; }
+  float linear(float value) { return value; }
+  float cosine(float value) { return (1.0 - cos(value * pi<float>)) / 2.0; }
+  float logarithmic(float v) { return std::pow(0.1, (1.0 - v) * 5); }
+}
+
 class AnalogOut {
   hertz_t sampleRate;
   unsigned int channel;
-  float zero;
-  float level = zero;
-  size_t offset = 0, length = 0;
+  float p0;
+  size_t written = 0;
+  struct point {
+    size_t frames;
+    float (*interp)(float);
+    float level;
+  };
+  boost::circular_buffer<point> points;
 public:
   AnalogOut(BelaContext *bela, unsigned int channel, volt_t zero = 0.0_V)
   : sampleRate(bela->analogSampleRate)
   , channel(channel)
-  , zero(Salt::to_analog(zero))
+  , p0(Salt::to_analog(zero))
+  , points(42)
   {}
 
-  void set_for(unsigned int frame, second_t duration, volt_t level = 5.0_V) {
-    this->offset = frame;
-    this->length = sampleRate * duration;
-    this->level = Salt::to_analog(level);
+  bool set_for(size_t frame, second_t duration, volt_t level = 5.0_V) {
+    if (points.size() < points.capacity() - 1) {
+      points.push_back(point{frame, interpolate::none, Salt::to_analog(level)});
+      points.push_back(point{sampleRate * duration, interpolate::none, p0});
+
+      return true;
+    }
+
+    return false;
   }
 
   void run(BelaContext *bela) {
-    auto * const samples = Salt::analogOut(bela, channel);
-    auto * const begin = samples + offset;
-    auto const size = std::min(bela->analogFrames - offset, length);
-    auto * const end = begin + size;
+    size_t frame = 0;
+    while (frame < bela->analogFrames && !points.empty()) {
+      auto &p1 = points.front();
+      auto const size = std::min(bela->analogFrames - frame, p1.frames - written);
+      for (size_t i = 0; i < size; i++) {
+        auto progress = p1.interp(float(written + i + 1) / p1.frames);
+        auto v = p0 * (1.0 - progress) + p1.level * progress;
+        Salt::analogOut(bela, channel)[frame + i] = v;
+      }
+      frame += size;
+      written += size;
+      if (written == p1.frames) {
+        p0 = p1.level;
+        points.pop_front();
+        written = 0;
+      }
+    }
+    while (frame < bela->analogFrames) {
+      Salt::analogOut(bela, channel)[frame++] = p0;
+    }
+  }
+};
 
-    std::fill(samples, begin, zero);
-    std::fill(begin, end, level);
-    std::fill(end, samples + bela->analogFrames, zero);
+class DigitalOut {
+  hertz_t sampleRate;
+  unsigned int pin;
+  size_t offset = 0, length = 0;
+public:
+  DigitalOut(BelaContext *bela, unsigned int pin)
+  : sampleRate(bela->digitalSampleRate), pin(pin)
+  {}
+
+  void set_for(unsigned int frame, second_t duration) {
+    this->offset = frame;
+    this->length = sampleRate * duration;
+  }
+
+  void run(BelaContext *bela) {
+    unsigned int frame = 0;
+    auto const size = std::min(bela->digitalFrames - offset, length);
+
+    while (frame < offset)
+      digitalWriteOnce(bela, frame++, pin, 0);
+    while (frame < (offset + size))
+      digitalWriteOnce(bela, frame++, pin, 1);
+    while (frame < bela->digitalFrames)
+      digitalWriteOnce(bela, frame++, pin, 0);
 
     length -= size;
     offset = 0;
@@ -678,16 +738,23 @@ class Sequencer final : public Mode {
   Song song;
   unsigned int position = 0;
   vector<AnalogOut> analogOut;
+  vector<DigitalOut> digitalOut;
 public:
   Sequencer(Pepper &pepper, BelaContext *bela)
   : Mode(pepper)
   , clockRising(0.2), resetRising(0.2)
   , position(0)
   {
+    if (bela->analogFrames * 2 != bela->digitalFrames) {
+      throw std::runtime_error("Unexpected digital frame count");
+    }
     load(song, "default.pepper");
     pepper.updateDisplay(Message { SongLoaded { &song } });
     for (unsigned int channel = 0; channel < bela->analogOutChannels; ++channel) {
       analogOut.emplace_back(bela, channel);
+    }
+    for (unsigned int channel = 0; channel < Salt::nPins; ++channel) {
+      digitalOut.emplace_back(bela, Salt::trigOutPins[channel]);
     }
   }
   ModeIdentifier mode() const override { return ModeIdentifier::Sequencer; }
@@ -712,6 +779,9 @@ public:
       }
     }
     for (auto &channel: analogOut) {
+      channel.run(bela);
+    }
+    for (auto &channel: digitalOut) {
       channel.run(bela);
     }
     clock.update(bela, [this](float bpm) {
