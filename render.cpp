@@ -621,9 +621,9 @@ class AnalogOut {
   hertz_t sampleRate;
   unsigned int channel;
   float p0;
-  size_t written = 0;
+  ptrdiff_t written = 0;
   struct point {
-    size_t frames;
+    ptrdiff_t frames;
     float (*interp)(float);
     float level;
   };
@@ -636,10 +636,11 @@ public:
   , points(42)
   {}
 
-  bool set_for(size_t frame, second_t duration, volt_t level = 5.0_V) {
+  bool set_for(unsigned int frame, volt_t level, second_t duration) {
     if (points.size() < points.capacity() - 1) {
+      float const previous = points.empty()? p0: points.back().level;
       points.push_back(point{frame, interpolate::none, Salt::to_analog(level)});
-      points.push_back(point{sampleRate * duration, interpolate::none, p0});
+      points.push_back(point{sampleRate * duration, interpolate::none, previous});
 
       return true;
     }
@@ -648,26 +649,28 @@ public:
   }
 
   void run(BelaContext *bela) {
-    size_t frame = 0;
-    while (frame < bela->analogFrames && !points.empty()) {
-      auto &p1 = points.front();
-      auto const size = std::min(bela->analogFrames - frame, p1.frames - written);
-      for (size_t i = 0; i < size; i++) {
-        auto progress = p1.interp(float(written + i + 1) / p1.frames);
-        auto v = p0 * (1.0 - progress) + p1.level * progress;
-        Salt::analogOut(bela, channel)[frame + i] = v;
-      }
-      frame += size;
-      written += size;
+    float * frame = Salt::analogOut(bela, channel);
+    float * const end = frame + bela->analogFrames;
+
+    while (frame < end && !points.empty()) {
+      auto const &p1 = points.front();
+
+      frame = std::generate_n(
+	frame, std::min(end - frame, p1.frames - written),
+	[&p1, this]{
+	  auto const progress = p1.interp(float(written++) / p1.frames); // [p0, p1)
+	  return p0 * (1.0 - progress) + p1.level * progress;
+	}
+      );
+
       if (written == p1.frames) {
         p0 = p1.level;
         points.pop_front();
         written = 0;
       }
     }
-    while (frame < bela->analogFrames) {
-      Salt::analogOut(bela, channel)[frame++] = p0;
-    }
+
+    std::fill(frame, end, p0);
   }
 };
 
