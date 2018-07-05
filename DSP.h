@@ -2,6 +2,7 @@
 #define DSP_H_DEFINED
 
 #include "units.h"
+#include <boost/circular_buffer.hpp>
 #include <boost/math/constants/constants.hpp>
 
 // https://en.wikipedia.org/wiki/Moving_average#Exponential_moving_average
@@ -171,6 +172,79 @@ public:
     s2 = b2 * in - a2 * out;
 
     return out;
+  }
+};
+
+namespace interpolate {
+  double none(double) { return 0; }
+  double linear(double value) { return value; }
+  double cosine(double value) {
+    return (1.0 - std::cos(value * boost::math::constants::pi<double>())) / 2.0;
+  }
+  double logarithmic(double v) { return std::pow(0.1, (1.0 - v) * 5); }
+  double inverted_parabola(double v) { return 1.0 - (1.0 - v) * (1.0 - v); }
+}
+
+template<typename T>
+class Interpolator {
+  T p0;
+  size_t written = 0;
+  struct point {
+    size_t frames;
+    double (*interp)(double);
+    T level;
+  };
+  boost::circular_buffer<point> points;
+
+public:
+  Interpolator(size_t capacity, T zero = T(0))
+  : p0(zero)
+  , points(capacity)
+  {}
+
+  bool add_point(size_t frames, T level,
+		 double (*interpolation)(double) = interpolate::linear) {
+    if (!points.full()) {
+      points.push_back(point{frames, interpolation, level});
+      return true;
+    }
+
+    return false;
+  }
+
+  template<typename OutputIterator>
+  OutputIterator generate_n(OutputIterator frame, size_t size) {
+    while (size && !points.empty()) {
+      auto const &p1 = points.front();
+      auto const n = std::min(size, p1.frames - written);
+      frame = std::generate_n(frame, n,
+	[&p1, this]{
+	  auto const progress = p1.interp(double(written++) / p1.frames); // [p0, p1)
+	  return T((1.0f - progress) * p0) + T(progress * p1.level);
+	}
+      );
+      size -= n;
+      if (written == p1.frames) {
+        p0 = p1.level;
+        points.pop_front();
+        written = 0;
+      }
+    }
+    return std::fill_n(frame, size, p0);
+  }
+  T operator()() {
+    if (!points.empty()) {
+      auto const &p1 = points.front();
+      auto const progress = p1.interp(double(written++) / p1.frames); // [p0, p1)
+      auto const value = T((1.0f - progress) * p0) + T(progress * p1.level);
+      if (written == p1.frames) {
+        p0 = p1.level;
+        points.pop_front();
+        written = 0;
+      }
+      return value;
+    }
+    return p0;
   }
 };
 
