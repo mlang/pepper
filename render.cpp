@@ -110,9 +110,8 @@ public:
           if (pat[position - pos] == 1) {
             f(channel);
           }
-        } else {
-          pos += pat.size();
         }
+        pos += pat.size();
         if (pos > position) {
           break;
         }
@@ -610,67 +609,30 @@ public:
   }
 };
 
-namespace interpolate {
-  float none(float) { return 0; }
-  float linear(float value) { return value; }
-  float cosine(float value) { return (1.0 - cos(value * pi<float>)) / 2.0; }
-  float logarithmic(float v) { return std::pow(0.1, (1.0 - v) * 5); }
-}
-
 class AnalogOut {
   hertz_t sampleRate;
   unsigned int channel;
-  float p0;
-  ptrdiff_t written = 0;
-  struct point {
-    ptrdiff_t frames;
-    float (*interp)(float);
-    float level;
-  };
-  boost::circular_buffer<point> points;
+  Interpolator<float> curve;
 public:
   AnalogOut(BelaContext *bela, unsigned int channel, volt_t zero = 0.0_V)
   : sampleRate(bela->analogSampleRate)
   , channel(channel)
-  , p0(Salt::to_analog(zero))
-  , points(42)
+  , curve(42, Salt::to_analog(zero))
   {}
 
   bool set_for(unsigned int frame, volt_t level, second_t duration) {
-    if (points.size() < points.capacity() - 1) {
-      float const previous = points.empty()? p0: points.back().level;
-      points.push_back(point{frame, interpolate::none, Salt::to_analog(level)});
-      points.push_back(point{sampleRate * duration, interpolate::none, previous});
+    if (!curve.empty()) {
+      rt_printf("WARNING: Trying to queue set_for on analog channel %d\n", channel);
 
-      return true;
+      return false;
     }
-
-    return false;
+    float const previous = curve.last_point();
+    curve.add_point(frame, Salt::to_analog(level), interpolate::none);
+    return curve.add_point(sampleRate * duration, previous, interpolate::none);
   }
 
   void run(BelaContext *bela) {
-    float * frame = Salt::analogOut(bela, channel);
-    float * const end = frame + bela->analogFrames;
-
-    while (frame < end && !points.empty()) {
-      auto const &p1 = points.front();
-
-      frame = std::generate_n(
-	frame, std::min(end - frame, p1.frames - written),
-	[&p1, this]{
-	  auto const progress = p1.interp(float(written++) / p1.frames); // [p0, p1)
-	  return p0 * (1.0 - progress) + p1.level * progress;
-	}
-      );
-
-      if (written == p1.frames) {
-        p0 = p1.level;
-        points.pop_front();
-        written = 0;
-      }
-    }
-
-    std::fill(frame, end, p0);
+    curve.generate_n(Salt::analogOut(bela, channel), bela->analogFrames);
   }
 };
 
@@ -745,7 +707,7 @@ class Sequencer final : public Mode {
 public:
   Sequencer(Pepper &pepper, BelaContext *bela)
   : Mode(pepper)
-  , clockRising(0.2), resetRising(0.2)
+  , clockRising(0.4), resetRising(0.4)
   , position(0)
   {
     if (bela->analogFrames * 2 != bela->digitalFrames) {
@@ -775,7 +737,7 @@ public:
       if (clockRising(Salt::analogIn<0>(bela)[frame])) {
         clock.tick(frame);
         song.triggersAt(position, [this, frame](unsigned int channel) {
-            analogOut[channel].set_for(frame, 5_ms, 4.0_V);
+            analogOut[channel].set_for(frame, 4_V, 5_ms);
         });
         pepper.updateDisplay(Message { PositionChanged { position } });
         position = song.length() > 0? (position + 1) % song.length(): 0;

@@ -4,6 +4,7 @@
 #include "units.h"
 #include <boost/circular_buffer.hpp>
 #include <boost/math/constants/constants.hpp>
+#include <numeric>
 
 // https://en.wikipedia.org/wiki/Moving_average#Exponential_moving_average
 template<typename T>
@@ -211,7 +212,14 @@ public:
 
     return false;
   }
-
+  bool empty() const { return points.empty(); }
+  size_t points_available() const { return points.capacity() - points.size(); }
+  T last_point() const { return points.empty()? p0: points.back().level; }
+  size_t pending_frames() const {
+    return std::accumulate(points.begin(), points.end(), 0,
+      [](size_t frames, point const &p) { return frames + p.frames; }
+    ) - written;
+  }
   template<typename OutputIterator>
   OutputIterator generate_n(OutputIterator frame, size_t size) {
     while (size && !points.empty()) {
