@@ -17,7 +17,6 @@
 #include <algorithm>
 #include <boost/archive/text_iarchive.hpp>
 #include <boost/archive/text_oarchive.hpp>
-#include <boost/circular_buffer.hpp>
 #include <boost/hana/functional/overload.hpp>
 #include <boost/math/constants/constants.hpp>
 #include <boost/optional.hpp>
