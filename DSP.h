@@ -176,15 +176,34 @@ public:
   }
 };
 
-namespace interpolate {
-  double none(double) { return 0; }
-  double linear(double value) { return value; }
-  double cosine(double value) {
-    return (1.0 - std::cos(value * boost::math::constants::pi<double>())) / 2.0;
+template<typename T> struct interpolate {
+  using signature = T(T, size_t, size_t, T);
+  static T none(T p0, size_t n, size_t d, T p1) {
+    return n < d? p0: p1;
   }
-  double logarithmic(double v) { return std::pow(0.1, (1.0 - v) * 5); }
-  double inverted_parabola(double v) { return 1.0 - (1.0 - v) * (1.0 - v); }
-}
+  static T linear(T p0, size_t n, size_t d, T p1) {
+    auto const mu = double(n) / d;
+    return (1.0 - mu) * p0 + mu * p1;
+  }
+  static T cosine(T p0, size_t n, size_t d, T p1) {
+    auto const mu = (1.0 - std::cos((double(n) / d) * boost::math::constants::pi<double>())) / 2.0;
+    return (1.0 - mu) * p0 + mu * p1;
+  }
+  static T exponential(T p0, size_t n, size_t d, T p1) {
+    return p0 * std::pow(double(p1) / p0, double(n) / d);
+  }
+  static T logarithmic(T p0, size_t n, size_t d, T p1) {
+    auto mu = double(n) / d;
+    if (p0 < p1) mu = 1.0 - mu;
+    mu = std::pow(std::pow(2, -10), mu);
+    return (1.0 - mu) * std::min(p0, p1) + mu * std::max(p0, p1);
+  }
+  static T inverted_parabola(T p0, size_t n, size_t d, T p1) {
+    auto const mu = 1.0 - (double(n) / d);
+    auto const mu2 = mu * mu;
+    return mu2 * p0 + (1.0 - mu2) * p1;
+  }
+};
 
 template<typename T>
 class Interpolator {
@@ -192,7 +211,7 @@ class Interpolator {
   size_t written = 0;
   struct point {
     size_t frames;
-    double (*interp)(double);
+    typename interpolate<T>::signature *interp;
     T level;
   };
   boost::circular_buffer<point> points;
@@ -204,7 +223,7 @@ public:
   {}
 
   bool add_point(size_t frames, T level,
-		 double (*interpolation)(double) = interpolate::linear) {
+		 typename interpolate<T>::signature *interpolation = interpolate<T>::linear) {
     if (!points.full()) {
       points.push_back(point{frames, interpolation, level});
       return true;
@@ -212,46 +231,37 @@ public:
 
     return false;
   }
+
   bool empty() const { return points.empty(); }
+
   size_t points_available() const { return points.capacity() - points.size(); }
+
   T last_point() const { return points.empty()? p0: points.back().level; }
+
   size_t pending_frames() const {
     return std::accumulate(points.begin(), points.end(), 0,
       [](size_t frames, point const &p) { return frames + p.frames; }
     ) - written;
   }
-  template<typename OutputIterator>
-  OutputIterator generate_n(OutputIterator frame, size_t size) {
-    while (size && !points.empty()) {
-      auto const &p1 = points.front();
-      auto const n = std::min(size, p1.frames - written);
-      frame = std::generate_n(frame, n,
-	[&p1, this]{
-	  auto const progress = p1.interp(double(written++) / p1.frames); // [p0, p1)
-	  return T((1.0f - progress) * p0) + T(progress * p1.level);
-	}
-      );
-      size -= n;
-      if (written == p1.frames) {
-        p0 = p1.level;
-        points.pop_front();
-        written = 0;
-      }
-    }
-    return std::fill_n(frame, size, p0);
-  }
+
   T operator()() {
-    if (!points.empty()) {
+    while (!points.empty()) {
       auto const &p1 = points.front();
-      auto const progress = p1.interp(double(written++) / p1.frames); // [p0, p1)
-      auto const value = T((1.0f - progress) * p0) + T(progress * p1.level);
-      if (written == p1.frames) {
-        p0 = p1.level;
-        points.pop_front();
-        written = 0;
+
+      if (p1.frames) {
+        auto value = p1.interp(p0, written++, p1.frames, p1.level); // [p0, p1)
+        if (written == p1.frames) {
+          p0 = p1.level;
+          points.pop_front();
+          written = 0;
+        }
+        return value;
       }
-      return value;
+
+      p0 = p1.level;
+      points.pop_front();
     }
+
     return p0;
   }
 };

@@ -611,27 +611,27 @@ public:
 class AnalogOut {
   hertz_t sampleRate;
   unsigned int channel;
-  Interpolator<float> curve;
+  Interpolator<float> signal;
 public:
   AnalogOut(BelaContext *bela, unsigned int channel, volt_t zero = 0.0_V)
   : sampleRate(bela->analogSampleRate)
   , channel(channel)
-  , curve(42, Salt::to_analog(zero))
+  , signal(42, Salt::to_analog(zero))
   {}
 
   bool set_for(unsigned int frame, volt_t level, second_t duration) {
-    if (!curve.empty()) {
+    if (signal.pending_frames()) {
       rt_printf("WARNING: Trying to queue set_for on analog channel %d\n", channel);
 
       return false;
     }
-    float const previous = curve.last_point();
-    curve.add_point(frame, Salt::to_analog(level), interpolate::none);
-    return curve.add_point(sampleRate * duration, previous, interpolate::none);
+    float const previous = signal.last_point();
+    signal.add_point(frame, Salt::to_analog(level), interpolate<float>::none);
+    return signal.add_point(sampleRate * duration, previous, interpolate<float>::none);
   }
 
   void run(BelaContext *bela) {
-    curve.generate_n(Salt::analogOut(bela, channel), bela->analogFrames);
+    std::generate_n(Salt::analogOut(bela, channel), bela->analogFrames, signal);
   }
 };
 
