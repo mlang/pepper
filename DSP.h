@@ -232,6 +232,22 @@ public:
     return false;
   }
 
+  void reset_to(size_t frames, T level) {
+    while (!points.empty() && !points.front().frames) {
+      p0 = points.front().level;
+      points.pop_front();
+    }
+    if (points.empty()) {
+      add_point(frames, level);
+    } else {
+      auto &p1 = points.front();
+      p0 = p1.interp(p0, written, p1.frames, p1.level);
+      written = 0;
+      p1.frames = frames;
+      p1.level = level;
+      points.erase(std::next(points.begin()), points.end());
+    }
+  }
   bool empty() const { return points.empty(); }
 
   size_t points_available() const { return points.capacity() - points.size(); }

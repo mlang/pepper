@@ -10,34 +10,30 @@
 #include "RTPipe.h"
 #include "RTQueue.h"
 #include "Salt.h"
+#include "Song.h"
 #include "mpark_variant.h"
 #include "units.h"
 #include <Bela.h>
 #include <DigitalChannelManager.h>
 #include <algorithm>
-#include <boost/archive/text_iarchive.hpp>
-#include <boost/archive/text_oarchive.hpp>
 #include <boost/hana/functional/overload.hpp>
 #include <boost/math/constants/constants.hpp>
 #include <boost/optional.hpp>
-#include <boost/serialization/vector.hpp>
 #include <brlapi.h>
 #include <cmath>
 #include <cstring>
-#include <fstream>
 #include <iostream>
 #include <lilv/lilvmm.hpp>
 #include <lv2/lv2plug.in/ns/ext/buf-size/buf-size.h>
 #include <memory>
 #include <poll.h>
 #include <sstream>
+#include <string>
 #include <utility>
 #include <vector>
 #include <X11/keysym.h>
 //-*--*---*----*-----*------*-------*--------*-------*------*-----*----*---*--*-//
 
-using boost::archive::text_iarchive;
-using boost::archive::text_oarchive;
 template<typename T> auto const pi = boost::math::constants::pi<T>();
 using boost::hana::overload;
 using boost::none;
@@ -51,6 +47,7 @@ using std::unique_ptr;
 using std::vector;
 using units::frequency::hertz_t;
 using units::literals::operator""_ms;
+using units::literals::operator""_s;
 using units::literals::operator""_Hz;
 using units::literals::operator""_V;
 using units::time::second_t;
@@ -74,74 +71,6 @@ enum class ModeIdentifier {
   AnalogueOscillator, FMOscillator,
   AudioLevelMeter, Sequencer
 };
-
-class Song {
-  vector<vector<int>> pattern;
-  vector<vector<int>> song;
-public:
-  Song() : pattern {
-    {1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0},
-    {1, 0, 0, 0, 1, 0, 0, 0}
-  }, song {
-    {1, 1, 1, 1},
-    {0, 0}
-  } {}
-  unsigned int length() const {
-    unsigned int max = 0;
-    for (auto const &track: song) {
-      unsigned int ticks = 0;
-      for (auto index: track) {
-        ticks += pattern[index].size();
-      }
-      if (ticks > max) {
-        max = ticks;
-      }
-    }
-    return max;
-  }
-  template<typename F> void triggersAt(unsigned int position, F f) {
-    unsigned int channel = 0;
-    for (auto const &track: song) {
-      unsigned int pos = 0;
-      for (auto index: track) {
-        auto const &pat = pattern[index];
-        if (position < pos + pat.size()) {
-          if (pat[position - pos] == 1) {
-            f(channel);
-          }
-        }
-        pos += pat.size();
-        if (pos > position) {
-          break;
-        }
-      }
-      channel += 1;
-    }
-  }
-  vector<vector<int>> &patterns() { return pattern; }
-  template<typename Archive>
-  void serialize(Archive &archive, unsigned int /*version*/) {
-    archive & pattern;
-    archive & song;
-  }
-};
-
-void save(Song const &song, string const &filename) {
-  std::ofstream ofs(filename);
-  text_oarchive oa(ofs);
-  oa << song;
-}
-
-void load(Song &song, string const &filename) {
-  std::ifstream ifs(filename);
-  if (ifs.good()) {
-    text_iarchive ia(ifs);
-    ia >> song;
-  } else {
-    std::cout << filename << " does not exist, saving..." << std::endl;
-    save(song, filename);
-  }
-}
 
 enum class Command { PrevPlugin, NextPlugin };
 
@@ -169,7 +98,7 @@ struct SongLoaded {
 };
   
 struct PositionChanged {
-  unsigned int position;
+  size_t position;
 };
 
 struct SongUpdated {
@@ -312,15 +241,16 @@ class Display {
     }
     void drawSong() {
       lines.resize(2);
-      for (auto const &pattern: this->song.patterns()) {
+      for (auto const &track: this->song.trigger()) {
+        std::vector<int> spaces;
+        std::adjacent_difference(track.begin(), track.end(), std::back_inserter(spaces));
+        std::transform(std::next(spaces.begin()), spaces.end(), std::next(spaces.begin()), [](int x) { return x - 1; });
         string rep;
-        for (auto v: pattern) {
-          char c = ' ';
-          if (v == 1) {
-            c = '%';
-          }
-          rep += c;
+        for (auto space: spaces) {
+          rep += string(space, ' ') + '%';
         }
+        rep += string(this->song.length() - rep.length(), ' ');
+        rep += "<>";
         lines.emplace_back(rep);
       }
     }
@@ -630,6 +560,12 @@ public:
     return signal.add_point(sampleRate * duration, previous, interpolate<float>::none);
   }
 
+  void reset_to(unsigned int frame, float level) {
+    signal.reset_to(frame, level);
+  }
+  bool add_point(second_t delay, float level, interpolate<float>::signature *interp = interpolate<float>::linear) {
+    return signal.add_point(sampleRate * delay, level, interp);
+  }
   void run(BelaContext *bela) {
     std::generate_n(Salt::analogOut(bela, channel), bela->analogFrames, signal);
   }
@@ -668,19 +604,19 @@ public:
 class Clock {
   optional<int> offset;
   optional<int> length;
+  optional<second_t> tickTime;
 public:
   void tick(unsigned int frame) {
     offset = frame;
   }
+  optional<second_t> const &duration() const noexcept { return tickTime; }
   template<typename BPM>
   void update(BelaContext *bela, BPM bpm) {
     if (offset) {
       if (length) {
         length = length.value() + offset.value();
-        bpm(60.0f /
-            (static_cast<float>(length.value()) /
-             static_cast<float>(bela->analogSampleRate)) /
-            4.0f);
+        tickTime = length.value() / hertz_t(bela->analogSampleRate);
+        bpm(60_s / tickTime.value() / 4.0);
       }
       length = bela->analogFrames - offset.value();
       offset = none;
@@ -688,6 +624,7 @@ public:
       if (length) {
         length = length.value() + bela->analogFrames;
         if (length.value() > bela->analogSampleRate) {
+          tickTime = none;
           bpm(0.0f);
           length = none;
         }
@@ -700,7 +637,7 @@ class Sequencer final : public Mode {
   EdgeDetect<float> clockRising, resetRising;
   Clock clock;
   Song song;
-  unsigned int position = 0;
+  size_t position = 0;
   vector<AnalogOut> analogOut;
   vector<DigitalOut> digitalOut;
 public:
@@ -735,9 +672,8 @@ public:
       }
       if (clockRising(Salt::analogIn<0>(bela)[frame])) {
         clock.tick(frame);
-        song.triggersAt(position, [this, frame](unsigned int channel) {
-            analogOut[channel].set_for(frame, 4_V, 5_ms);
-        });
+        song.playAt(position, frame, clock.duration().value_or(60_s/120/4),
+                    analogOut, digitalOut);
         pepper.updateDisplay(Message { PositionChanged { position } });
         position = song.length() > 0? (position + 1) % song.length(): 0;
       }
@@ -990,14 +926,11 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
 }
 
 void Display::SequencerTab::click(unsigned int cell, Display &display) {
-  if (y >= 3 && y < 3 + song.patterns().size()) {
-    auto &pattern = song.patterns()[y - 3];
-    if (x+cell < pattern.size()) {
-      pattern[x+cell] = pattern[x+cell] == 0? 1: 0;
-      drawSong();
-      display.redraw();
-      display.pepper.sendRequest(UpdateSong { new Song(song) });
-    }
+  if (y >= 3 && y < 3 + song.trigger().size()) {
+    song.flipTrigger(y - 3, x+cell);
+    drawSong();
+    display.redraw();
+    display.pepper.sendRequest(UpdateSong { new Song(song) });
   }
 }
 
