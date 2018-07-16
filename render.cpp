@@ -560,11 +560,11 @@ public:
     return signal.add_point(sampleRate * duration, previous, interpolate<float>::none);
   }
 
-  void reset_to(unsigned int frame, float level) {
-    signal.reset_to(frame, level);
+  void reset_to(unsigned int frame, volt_t volt) {
+    signal.reset_to(frame, Salt::to_analog(volt));
   }
-  bool add_point(second_t delay, float level, interpolate<float>::signature *interp = interpolate<float>::linear) {
-    return signal.add_point(sampleRate * delay, level, interp);
+  bool add_point(second_t delay, volt_t volt, interpolate<float>::signature *interp = interpolate<float>::linear) {
+    return signal.add_point(sampleRate * delay, Salt::to_analog(volt), interp);
   }
   void run(BelaContext *bela) {
     std::generate_n(Salt::analogOut(bela, channel), bela->analogFrames, signal);

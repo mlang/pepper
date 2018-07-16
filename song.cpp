@@ -29,13 +29,6 @@ void serialize(Archive &ar, std::tuple<Args...> &t, const unsigned int version) 
   serialize_tuple<sizeof...(Args)>::call(ar, t, version);
 }
     
-template<typename Archive>
-void serialize(Archive &archive, ::Song &song, unsigned int /*version*/) {
-  archive & song.cvTracks;
-  archive & song.triggerTracks;
-  archive & song.size;
-}
-
 }}
 
 void save(Song const &song, std::string const &filename) {
