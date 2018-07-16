@@ -223,6 +223,7 @@ class Display {
   };
   class SequencerTab : public Tab {
     Song song;
+    size_t currentCVTrack = 0;
   public:
     SequencerTab() : Tab("Sequencer", 2) {
       lines[0].text = "Not running";
@@ -243,8 +244,11 @@ class Display {
       lines.resize(2);
       for (auto const &track: this->song.trigger()) {
         std::vector<int> spaces;
-        std::adjacent_difference(track.begin(), track.end(), std::back_inserter(spaces));
-        std::transform(std::next(spaces.begin()), spaces.end(), std::next(spaces.begin()), [](int x) { return x - 1; });
+        std::adjacent_difference(track.begin(), track.end(),
+                                 std::back_inserter(spaces));
+        std::transform(std::next(spaces.begin()), spaces.end(),
+                       std::next(spaces.begin()),
+                       [](int x) { return x - 1; });
         string rep;
         for (auto space: spaces) {
           rep += string(space, ' ') + '%';
@@ -253,9 +257,27 @@ class Display {
         rep += "<>";
         lines.emplace_back(rep);
       }
+      auto const &cv = this->song.cv()[currentCVTrack];
+      std::vector<string> screen(61, string(this->song.length(), ' '));
+      string line = "%";
+      line += string(this->song.length() - 1, '=');
+      for (auto i = cv.begin(); i != cv.end(); ++i) {
+        size_t step = i->first;
+        uint8_t value = std::get<0>(i->second);
+        size_t length = this->song.length(cv.begin(), cv.end(), i);
+        if (step + length > song.length()) {
+          length = song.length() - step;
+        }
+        screen[value].replace(step, length, line, 0, length);
+      }
+      for (auto i = screen.rbegin(); i != screen.rend(); ++i) {
+        lines.emplace_back(*i);
+      }
     }
     void operator()(PositionChanged const &changed) {
-      lines[1].cursor = changed.position;
+      for (auto i = std::next(lines.begin()); i != lines.end(), ++i) {
+        i->cursor = changed.position;
+      }
     }
     void click(unsigned int cell, Display &display) override;
     void saveSong() const {
@@ -931,6 +953,15 @@ void Display::SequencerTab::click(unsigned int cell, Display &display) {
     drawSong();
     display.redraw();
     display.pepper.sendRequest(UpdateSong { new Song(song) });
+  } else if (y >= 3 + song.trigger().size()) {
+    auto const cvY = y - 2 - song.trigger().size();
+    auto const cvX = x + cell;
+    if (cvX < song.length()) {
+      song.cv()[currentCVTrack][cvX] = {60 - cvY, interpol::none};
+      drawSong();
+      display.redraw();
+      display.pepper.sendRequest(UpdateSong { new Song(song) });
+    }
   }
 }
 
