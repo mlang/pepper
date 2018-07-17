@@ -3,5 +3,5 @@ CPPFLAGS += $(shell pkg-config --cflags lilv-0)
 LDLIBS = -lbrlapi -lboost_serialization
 LDLIBS += $(shell pkg-config --libs lilv-0)
 
-pepper: render.cpp DSP.h
+pepper: render.cpp song.cpp DSP.h Salt.h Song.h
 	$(MAKE) -C ../.. PROJECT=pepper CPPFLAGS="$(CPPFLAGS)" LDLIBS="$(LDLIBS)"
