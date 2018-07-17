@@ -928,7 +928,7 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
 void Display::SequencerTab::drawSong() {
   lines.resize(2);
   for (auto const &track: this->song.trigger()) {
-    std::vector<int> spaces;
+    vector<int> spaces;
     std::adjacent_difference(track.begin(), track.end(),
                              std::back_inserter(spaces));
     std::transform(std::next(spaces.begin()), spaces.end(),
@@ -942,7 +942,8 @@ void Display::SequencerTab::drawSong() {
     rep += "<>";
     lines.emplace_back(rep);
   }
-  std::vector<string> screen(61, string(this->song.length(), ' '));
+
+  vector<string> screen(61, string(song.length(), ' '));
   auto drawLayer = [&screen, this](auto const &begin, auto const &end,
                                    auto const &line) {
     for (auto i = begin; i != end; ++i) {
@@ -980,7 +981,7 @@ void Display::SequencerTab::click(unsigned int cell, Display &display) {
     display.redraw();
     display.pepper.sendRequest(UpdateSong { new Song(song) });
   } else if (y >= 3 + song.trigger().size()) {
-    auto const cvY = y - 2 - song.trigger().size();
+    auto const cvY = y - 3 - song.trigger().size();
     auto const cvX = x + cell;
     if (cvX < song.length()) {
       song.cv()[currentCVTrack][cvX] = {60 - cvY, interpol::none};
