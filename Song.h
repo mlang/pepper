@@ -98,6 +98,8 @@ public:
           case interpol::linear:
             interp = &interpolate<float>::linear;
             break;
+          case interpol::none:
+            break;
           }
           if (next != p && note != nextNote && interp) {
             size_t ticks = length(cv.begin(), cv.end(), p);

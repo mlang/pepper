@@ -195,6 +195,9 @@ class Display {
       x += display.width;
       draw(display);
     }
+    virtual bool keyPressed(int /*key*/, Display & /*display*/) {
+      return false;
+    }
     virtual void click(unsigned int /*cell*/, Display & /*display*/) {};
   };
   class AnalogueOscillatorTab : public Tab {
@@ -240,46 +243,26 @@ class Display {
       this->song = *song;
       drawSong();
     }
-    void drawSong() {
-      lines.resize(2);
-      for (auto const &track: this->song.trigger()) {
-        std::vector<int> spaces;
-        std::adjacent_difference(track.begin(), track.end(),
-                                 std::back_inserter(spaces));
-        std::transform(std::next(spaces.begin()), spaces.end(),
-                       std::next(spaces.begin()),
-                       [](int x) { return x - 1; });
-        string rep;
-        for (auto space: spaces) {
-          rep += string(space, ' ') + '%';
-        }
-        rep += string(this->song.length() - rep.length(), ' ');
-        rep += "<>";
-        lines.emplace_back(rep);
-      }
-      auto const &cv = this->song.cv()[currentCVTrack];
-      std::vector<string> screen(61, string(this->song.length(), ' '));
-      string line = "%";
-      line += string(this->song.length() - 1, '=');
-      for (auto i = cv.begin(); i != cv.end(); ++i) {
-        size_t step = i->first;
-        uint8_t value = std::get<0>(i->second);
-        size_t length = this->song.length(cv.begin(), cv.end(), i);
-        if (step + length > song.length()) {
-          length = song.length() - step;
-        }
-        screen[value].replace(step, length, line, 0, length);
-      }
-      for (auto i = screen.rbegin(); i != screen.rend(); ++i) {
-        lines.emplace_back(*i);
-      }
-    }
+    void drawSong();
     void operator()(PositionChanged const &changed) {
-      for (auto i = std::next(lines.begin()); i != lines.end(), ++i) {
+      for (auto i = std::next(lines.begin()); i != lines.end(); ++i) {
         i->cursor = changed.position;
       }
     }
     void click(unsigned int cell, Display &display) override;
+    bool keyPressed(int key, Display &/*display*/) override {
+      if (key >= XK_0 && key < XK_4) {
+        currentCVTrack = key - XK_0;
+        return true;
+      }
+      switch (key) {
+      case XK_s:
+        saveSong();
+        return true;
+      default:
+        return false;
+      }
+    }
     void saveSong() const {
       save(song, "default.pepper");
     }
@@ -926,13 +909,8 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
     case BRLAPI_KEY_TYPE_SYM:
       switch (key.command) {
       case 0: // LATIN1
-        switch (key.argument) {
-        case XK_s:
-          sequencerTab().saveSong();
+        if (currentTab().keyPressed(key.argument, *this))
           return;
-        default:
-          break;
-        }
         break;
       default:
         break;
@@ -945,6 +923,54 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
   std::stringstream str;
   str << key.type << " " << key.command << " " << key.argument << " " << key.flags;
   writeText(str.str(), BRLAPI_CURSOR_OFF);
+}
+
+void Display::SequencerTab::drawSong() {
+  lines.resize(2);
+  for (auto const &track: this->song.trigger()) {
+    std::vector<int> spaces;
+    std::adjacent_difference(track.begin(), track.end(),
+                             std::back_inserter(spaces));
+    std::transform(std::next(spaces.begin()), spaces.end(),
+                   std::next(spaces.begin()),
+                   [](int x) { return x - 1; });
+    string rep;
+    for (auto space: spaces) {
+      rep += string(space, ' ') + '%';
+    }
+    rep += string(this->song.length() - rep.length(), ' ');
+    rep += "<>";
+    lines.emplace_back(rep);
+  }
+  std::vector<string> screen(61, string(this->song.length(), ' '));
+  auto drawLayer = [&screen, this](auto const &begin, auto const &end,
+                                   auto const &line) {
+    for (auto i = begin; i != end; ++i) {
+      size_t step = i->first;
+      uint8_t value = std::get<0>(i->second);
+      size_t length = song.length(begin, end, i);
+      if (step + length > song.length()) {
+        length = song.length() - step;
+      }
+      screen[value].replace(step, length, line, 0, length);
+    }
+  };
+  string fgLine = "%";
+  fgLine += string(this->song.length() - 1, '=');
+  string bgLine = "=";
+  bgLine += string(this->song.length() - 1, '-');
+  for (size_t track = 0; track < this->song.cv().size(); ++track) {
+    if (track != currentCVTrack) {
+      auto const &cv = this->song.cv()[track];
+      drawLayer(cv.begin(), cv.end(), bgLine);
+    }
+  }
+  auto const &cv = this->song.cv()[currentCVTrack];
+  drawLayer(cv.begin(), cv.end(), fgLine);
+
+  for (auto i = screen.rbegin(); i != screen.rend(); ++i) {
+    lines.emplace_back(*i);
+  }
 }
 
 void Display::SequencerTab::click(unsigned int cell, Display &display) {
