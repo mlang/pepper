@@ -557,7 +557,7 @@ public:
 
   bool set_for(unsigned int frame, volt_t level, second_t duration) {
     if (signal.pending_frames()) {
-      rt_printf("WARNING: Trying to queue set_for on analog channel %d\n", channel);
+      rt_printf("WARNING: Trying to queue set_for on analog channel %d with %d pending frames\n", channel, signal.pending_frames());
 
       return false;
     }
