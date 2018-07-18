@@ -69,7 +69,8 @@ public:
 	  constexpr auto vsemi = units::voltage::volt_t(1) / 12;
           bool const last = std::next(p) == cv.end();
           auto next = last? cv.begin(): std::next(p);
-          analog[cvChannel].reset_to(offset, vsemi * p->second.value);
+          size_t ticks = length(cv.begin(), cv.end(), p);
+	  analog[cvChannel].reset_to(offset, vsemi * p->second.value);
           interpolate<float>::signature *interp = nullptr;
           switch (p->second.interp) {
           case interpol::linear:
@@ -82,11 +83,10 @@ public:
             break;
           }
           if (p->second.value != next->second.value && interp) {
-            size_t ticks = length(cv.begin(), cv.end(), p);
             analog[cvChannel].add_point(ticks * sps,
 					vsemi * next->second.value, interp);
           }
-          analog[cvChannel+1].set_for(offset, units::voltage::volt_t(4), units::time::millisecond_t(5));
+          analog[cvChannel+1].set_for(offset, units::voltage::volt_t(4), ticks * sps * 0.9);
         }
         cvChannel += 2;
         if (cvChannel >= analog.size()) {
@@ -115,18 +115,5 @@ public:
 
 void save(Song const &song, std::string const &filename);
 void load(Song &song, std::string const &filename);
-
-inline void dump(Song const &song) {
-  std::cout << "Song {" << "\n" << "  size = " << song.length() << "\n";
-  std::cout << "  CV size = " << song.cv().size() << "\n";
-  for (auto const &cv : song.cv()) {
-    std::cout << "  CV {" << "\n";
-    for (auto const &pair: cv) {
-      std::cout << "    [" << pair.first << "] = Note { " << int(pair.second.value) << " " << static_cast<int>(pair.second.interp) << "}" << "\n";
-    }
-    std::cout << "  }" << "\n";
-  }
-  std::cout << "}" << std::endl;
-}
 
 #endif // SONG_H_DEFINED

@@ -239,7 +239,6 @@ class Display {
     }
     void operator()(Song const *song) {
       this->song = *song;
-      dump(this->song);
       drawSong();
     }
     void drawSong();
@@ -666,9 +665,7 @@ public:
     if (bela->analogFrames * 2 != bela->digitalFrames) {
       throw std::runtime_error("Unexpected digital frame count");
     }
-    dump(song);
     load(song, "default.pepper");
-    dump(song);
     pepper.updateDisplay(Message { SongLoaded { &song } });
     for (unsigned int channel = 0; channel < bela->analogOutChannels; ++channel) {
       analogOut.emplace_back(bela, channel);
