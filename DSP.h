@@ -260,6 +260,24 @@ public:
     ) - written;
   }
 
+  template<typename OutputIterator>
+  OutputIterator generate_n(OutputIterator frame, size_t size) {
+    while (size && !points.empty()) {
+      auto const &p1 = points.front();
+      auto const n = std::min(size, p1.frames - written);
+      frame = std::generate_n(frame, n,
+        [&p1, this]{ return p1.interp(p0, written++, p1.frames, p1.level); }
+      );
+      size -= n;
+      if (written == p1.frames) {
+        p0 = p1.level;
+        points.pop_front();
+        written = 0;
+      }
+    }
+    return std::fill_n(frame, size, p0);
+  }
+
   T operator()() {
     while (!points.empty()) {
       auto const &p1 = points.front();

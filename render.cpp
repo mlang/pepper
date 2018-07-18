@@ -579,8 +579,7 @@ public:
     return signal.add_point(sampleRate * delay, Salt::to_analog(volt), interp);
   }
   void run(BelaContext *bela) {
-    std::generate_n(Salt::analogOut(bela, channel), bela->analogFrames,
-                    [this]{ return signal(); });
+    signal.generate_n(Salt::analogOut(bela, channel), bela->analogFrames);
   }
 };
 
