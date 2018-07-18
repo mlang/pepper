@@ -4,31 +4,17 @@
 #include <boost/serialization/map.hpp>
 #include <boost/serialization/set.hpp>
 #include <boost/serialization/vector.hpp>
+#include <fstream>
 #include <iostream>
 
 namespace boost { namespace serialization {
 
-template<uint N>
-struct serialize_tuple {
-  template<class Archive, typename... Args>
-  static void call(Archive & ar, std::tuple<Args...> & t, const unsigned int version) {
-    serialize_tuple<N-1>::call(ar, t, version);
-    ar & std::get<N-1>(t);
-  }
-};
-
-template<>
-struct serialize_tuple<0> {
-  template<class Archive, typename... Args>
-  static void call(Archive &, std::tuple<Args...> &, const unsigned int /*version*/) {
-  }
-};
-    
-template<class Archive, typename... Args>
-void serialize(Archive &ar, std::tuple<Args...> &t, const unsigned int version) {
-  serialize_tuple<sizeof...(Args)>::call(ar, t, version);
+template<typename Archive>
+void serialize(Archive &archive, ::Note &note, const unsigned int) {
+  archive & note.value;
+  archive & note.interp;
 }
-    
+
 }}
 
 void save(Song const &song, std::string const &filename) {

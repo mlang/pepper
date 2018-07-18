@@ -241,6 +241,7 @@ class Display {
     }
     void operator()(Song const *song) {
       this->song = *song;
+      dump(this->song);
       drawSong();
     }
     void drawSong();
@@ -654,7 +655,9 @@ public:
     if (bela->analogFrames * 2 != bela->digitalFrames) {
       throw std::runtime_error("Unexpected digital frame count");
     }
-    load(song, "default.pepper");
+    dump(song);
+    // load(song, "default.pepper");
+    // dump(song);
     pepper.updateDisplay(Message { SongLoaded { &song } });
     for (unsigned int channel = 0; channel < bela->analogOutChannels; ++channel) {
       analogOut.emplace_back(bela, channel);
@@ -928,17 +931,19 @@ void Display::keyPressed(brlapi_keyCode_t keyCode) {
 void Display::SequencerTab::drawSong() {
   lines.resize(2);
   for (auto const &track: this->song.trigger()) {
-    vector<int> spaces;
-    std::adjacent_difference(track.begin(), track.end(),
-                             std::back_inserter(spaces));
-    std::transform(std::next(spaces.begin()), spaces.end(),
-                   std::next(spaces.begin()),
-                   [](int x) { return x - 1; });
     string rep;
-    for (auto space: spaces) {
-      rep += string(space, ' ') + '%';
+    if (!track.empty()) {
+      vector<int> spaces;
+      std::adjacent_difference(track.begin(), track.end(),
+			       std::back_inserter(spaces));
+      std::transform(std::next(spaces.begin()), spaces.end(),
+		     std::next(spaces.begin()),
+		     [](int x) { return x - 1; });
+      for (auto space: spaces) {
+	rep += string(space, ' ') + '%';
+      }
     }
-    rep += string(this->song.length() - rep.length(), ' ');
+    rep += string(song.length() - rep.length(), ' ');
     rep += "<>";
     lines.emplace_back(rep);
   }
@@ -947,8 +952,8 @@ void Display::SequencerTab::drawSong() {
   auto drawLayer = [&screen, this](auto const &begin, auto const &end,
                                    auto const &line) {
     for (auto i = begin; i != end; ++i) {
-      size_t step = i->first;
-      uint8_t value = std::get<0>(i->second);
+      auto const step = i->first;
+      auto const value = i->second.value;
       size_t length = song.length(begin, end, i);
       if (step + length > song.length()) {
         length = song.length() - step;
@@ -966,7 +971,7 @@ void Display::SequencerTab::drawSong() {
       drawLayer(cv.begin(), cv.end(), bgLine);
     }
   }
-  auto const &cv = this->song.cv()[currentCVTrack];
+  auto const &cv = song.cv()[currentCVTrack];
   drawLayer(cv.begin(), cv.end(), fgLine);
 
   for (auto i = screen.rbegin(); i != screen.rend(); ++i) {
@@ -1032,7 +1037,7 @@ bool setup(BelaContext *bela, void * /*userData*/)
     try {
       p = make_unique<Pepper>(bela);
     } catch (std::exception &e) {
-      std::cerr << e.what() << std::endl;
+      std::cerr << "Setup exception: " << e.what() << std::endl;
     }
   }
 
