@@ -656,8 +656,8 @@ public:
       throw std::runtime_error("Unexpected digital frame count");
     }
     dump(song);
-    // load(song, "default.pepper");
-    // dump(song);
+    load(song, "default.pepper");
+    dump(song);
     pepper.updateDisplay(Message { SongLoaded { &song } });
     for (unsigned int channel = 0; channel < bela->analogOutChannels; ++channel) {
       analogOut.emplace_back(bela, channel);
@@ -986,8 +986,8 @@ void Display::SequencerTab::click(unsigned int cell, Display &display) {
     display.redraw();
     display.pepper.sendRequest(UpdateSong { new Song(song) });
   } else if (y >= 3 + song.trigger().size()) {
-    auto const cvY = y - 3 - song.trigger().size();
-    auto const cvX = x + cell;
+    int const cvY = y - 3 - song.trigger().size();
+    int const cvX = x + cell;
     if (cvX < song.length()) {
       song.cv()[currentCVTrack][cvX] = {60 - cvY, interpol::none};
       drawSong();
