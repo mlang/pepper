@@ -7,11 +7,11 @@
 #include <set>
 #include <string>
 #include <vector>
-
+#include <iostream>
 enum class interpol { none, linear, cosine, sine };
 
 struct Note {
-  uint8_t value;
+  int value;
   interpol interp;
 };
 
