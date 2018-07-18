@@ -146,7 +146,7 @@ class Display {
       LineInfo() = default;
       explicit LineInfo(
         string text, optional<int> cursor = none
-      ) : text(std::move(text)), cursor(cursor) {}
+      ) : text(std::move(text)), cursor(std::move(cursor)) {}
     };
     vector<LineInfo> lines;
   public:
@@ -203,12 +203,10 @@ class Display {
   class AnalogueOscillatorTab : public Tab {
   public:
     AnalogueOscillatorTab() : Tab("AnalogueOsc") {}
-    void click(unsigned int /*cell*/, Display & /*display*/) {}
   };
   class FMOscillatorTab : public Tab {
   public:
     FMOscillatorTab() : Tab("FMOsc") {}
-    void click(unsigned int /*cell*/, Display & /*display*/) {}
   };
   class LevelMeterTab : public Tab {
   public:
@@ -222,7 +220,6 @@ class Display {
         lines[i+4].text = "A" + to_string(i) + ": " + to_string(level.analog[i]);
       }
     }
-    void click(unsigned int /*cell*/, Display & /*display*/) override {}
   };
   class SequencerTab : public Tab {
     Song song;
@@ -287,6 +284,10 @@ class Display {
   friend class Tab;
 public:
   explicit Display(Pepper &pepper);
+  Display(Display &&) = delete;
+  Display(Display const &) = delete;
+  Display &operator=(Display &&) = delete;
+  Display &operator=(Display const &) = delete;
   ~Display() {
     if (connected) {
       brlapi__leaveTtyMode(handle());
@@ -329,6 +330,10 @@ class Pepper {
   void requestReceived(Request & /*req*/);
 public:
   explicit Pepper(BelaContext * /*bela*/);
+  Pepper(Pepper &&) = delete;
+  Pepper(Pepper const &) = delete;
+  Pepper &operator=(Pepper &&) = delete;
+  Pepper &operator=(Pepper const &) = delete;
   ~Pepper();
   void render(BelaContext * /*bela*/);
   void sendCommand(Command const &cmd) {
@@ -587,6 +592,9 @@ public:
   {}
 
   void set_for(unsigned int frame, second_t duration) {
+    if (length) {
+      rt_printf("Clipping set_for on digital pin %d (%d)\n", pin, length);
+    }
     this->offset = frame;
     this->length = sampleRate * duration;
   }
@@ -595,12 +603,15 @@ public:
     unsigned int frame = 0;
     auto const size = std::min(bela->digitalFrames - offset, length);
 
-    while (frame < offset)
+    while (frame < offset) {
       digitalWriteOnce(bela, frame++, pin, 0);
-    while (frame < (offset + size))
+    }
+    while (frame < (offset + size)) {
       digitalWriteOnce(bela, frame++, pin, 1);
-    while (frame < bela->digitalFrames)
+    }
+    while (frame < bela->digitalFrames) {
       digitalWriteOnce(bela, frame++, pin, 0);
+    }
 
     length -= size;
     offset = 0;
@@ -650,7 +661,6 @@ public:
   Sequencer(Pepper &pepper, BelaContext *bela)
   : Mode(pepper)
   , clockRising(0.4), resetRising(0.4)
-  , position(0)
   {
     if (bela->analogFrames * 2 != bela->digitalFrames) {
       throw std::runtime_error("Unexpected digital frame count");
@@ -662,8 +672,8 @@ public:
     for (unsigned int channel = 0; channel < bela->analogOutChannels; ++channel) {
       analogOut.emplace_back(bela, channel);
     }
-    for (unsigned int channel = 0; channel < Salt::nPins; ++channel) {
-      digitalOut.emplace_back(bela, Salt::trigOutPins[channel]);
+    for (auto pin: Salt::trigOutPins) {
+      digitalOut.emplace_back(bela, pin);
     }
   }
   ModeIdentifier mode() const override { return ModeIdentifier::Sequencer; }

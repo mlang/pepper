@@ -59,7 +59,7 @@ public:
 
   template<typename Analog, typename Digital>
   void playAt(unsigned int position, unsigned int offset, units::time::second_t sps,
-          Analog &analog, Digital &digital) {
+              Analog &analog, Digital &digital) const {
     if (position < size) {
       unsigned int cvChannel = 0;
       unsigned int triggerChannel = 0;
@@ -81,7 +81,7 @@ public:
           case interpol::none:
             break;
           }
-          if (next != p && p->second.value != next->second.value && interp) {
+          if (p->second.value != next->second.value && interp) {
             size_t ticks = length(cv.begin(), cv.end(), p);
             analog[cvChannel].add_point(ticks * sps,
 					vsemi * next->second.value, interp);
