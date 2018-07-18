@@ -248,9 +248,11 @@ class Display {
       }
     }
     void click(unsigned int cell, Display &display) override;
-    bool keyPressed(int key, Display &/*display*/) override {
+    bool keyPressed(int key, Display &display) override {
       if (key >= XK_0 && key < XK_4) {
         currentCVTrack = key - XK_0;
+        drawSong();
+        display.redraw();
         return true;
       }
       switch (key) {

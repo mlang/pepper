@@ -25,7 +25,13 @@ Bela:~# git clone https://github.com/mlang/pepper
 You can now build the project with:
 
 ```shell
-Bela:~# make -C/root/Belai/project/pepper
+Bela:~# make -C/root/Belai/projects/pepper
+```
+
+And you can run pepper with:
+
+```shell
+Bela:~# make -C/root/Bela run PROJECT=pepper
 ```
 
 # Modes
