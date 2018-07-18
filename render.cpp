@@ -15,6 +15,7 @@
 #include "units.h"
 #include <Bela.h>
 #include <DigitalChannelManager.h>
+#include <X11/keysym.h>
 #include <algorithm>
 #include <boost/hana/functional/overload.hpp>
 #include <boost/math/constants/constants.hpp>
@@ -31,7 +32,7 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include <X11/keysym.h>
+
 //-*--*---*----*-----*------*-------*--------*-------*------*-----*----*---*--*-//
 
 template<typename T> auto const pi = boost::math::constants::pi<T>();
@@ -216,7 +217,7 @@ class Display {
       lines[1].text = "R: " + to_string(level.r);
       lines[2].text = "PeakL: " + to_string(level.lp);
       lines[3].text = "PeakR: " + to_string(level.rp);
-      for (unsigned long i = 0; i < 8; i++) {
+      for (auto i = 0; i < 8; i++) {
         lines[i+4].text = "A" + to_string(i) + ": " + to_string(level.analog[i]);
       }
     }
@@ -578,7 +579,8 @@ public:
     return signal.add_point(sampleRate * delay, Salt::to_analog(volt), interp);
   }
   void run(BelaContext *bela) {
-    std::generate_n(Salt::analogOut(bela, channel), bela->analogFrames, signal);
+    std::generate_n(Salt::analogOut(bela, channel), bela->analogFrames,
+                    [this]{ return signal(); });
   }
 };
 
