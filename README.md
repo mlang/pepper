@@ -1,6 +1,6 @@
 # Synopsis
 
-Pepper is a Bela/Salt project to create a Braille display enabled eurorack
+Pepper is a [Bela](https://bela.io/)/[Salt](https://blog.bela.io/2018/05/02/salt-a-programmable-eurorack-syntesizer/) project to create a Braille display enabled eurorack
 multi-function module.
 
 # Installation
