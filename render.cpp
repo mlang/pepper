@@ -681,31 +681,11 @@ public:
   void deactivate() override {}
   void setSong(Song *newSong) {
     song = std::move(*newSong);
-    position = std::min(position, song.length());
+    position = std::min(position, song.length() - 1);
   }
-  void run(BelaContext *bela) override {
-    for (unsigned int frame = 0; frame < bela->analogFrames; ++frame) {
-      if (resetRising(Salt::analogIn<1>(bela)[frame])) {
-        position = 0;
-      }
-      if (clockRising(Salt::analogIn<0>(bela)[frame])) {
-        clock.tick(frame);
-        song.playAt(position, frame, clock.duration().value_or(60_s/120/4),
-                    analogOut, digitalOut);
-        pepper.updateDisplay(Message { PositionChanged { position } });
-        position = song.length() > 0? (position + 1) % song.length(): 0;
-      }
-    }
-    for (auto &channel: analogOut) {
-      channel.run(bela);
-    }
-    for (auto &channel: digitalOut) {
-      channel.run(bela);
-    }
-    clock.update(bela, [this](float bpm) {
-      pepper.updateDisplay(Message { TempoChanged { bpm } });
-    });
-  }
+  void run(BelaContext *bela) override;
+private:
+  void play(unsigned int offset);
 };
 
 } // anonymous namespace
@@ -945,12 +925,12 @@ void Display::SequencerTab::drawSong() {
     if (!track.empty()) {
       vector<int> spaces;
       std::adjacent_difference(track.begin(), track.end(),
-			       std::back_inserter(spaces));
+                               std::back_inserter(spaces));
       std::transform(std::next(spaces.begin()), spaces.end(),
-		     std::next(spaces.begin()),
-		     [](int x) { return x - 1; });
+                     std::next(spaces.begin()),
+                     [](int x) { return x - 1; });
       for (auto space: spaces) {
-	rep += string(space, ' ') + '%';
+        rep += string(space, ' ') + '%';
       }
     }
     rep += string(song.length() - rep.length(), ' ');
@@ -1024,6 +1004,78 @@ void Pepper::render(BelaContext *bela) {
   }
   digital.processInput(bela->digital, bela->digitalFrames);
   plugins[index]->run(bela);
+}
+
+void Sequencer::run(BelaContext *bela) {
+  for (unsigned int frame = 0; frame < bela->analogFrames; ++frame) {
+    if (resetRising(Salt::analogIn<1>(bela)[frame])) {
+      position = 0;
+    }
+    if (clockRising(Salt::analogIn<0>(bela)[frame])) {
+      clock.tick(frame);
+      play(frame);
+      pepper.updateDisplay(Message { PositionChanged { position } });
+      position = song.length() > 0? (position + 1) % song.length(): 0;
+    }
+  }
+  for (auto &channel: analogOut) {
+    channel.run(bela);
+  }
+  for (auto &channel: digitalOut) {
+    channel.run(bela);
+  }
+  clock.update(bela, [this](float bpm) {
+    pepper.updateDisplay(Message { TempoChanged { bpm } });
+  });
+}
+
+void Sequencer::play(unsigned int offset) {
+  if (position < song.length()) {
+    unsigned int cvChannel = 0;
+    unsigned int triggerChannel = 0;
+    for (auto const &cv: song.cv()) {
+      auto const p = cv.find(position);
+      if (p != cv.end()) {
+        constexpr auto vsemi = 1_V / 12;
+        auto gateTime = clock.duration().value_or(60_s/120/4);
+        bool const last = std::next(p) == cv.end();
+        auto next = last? cv.begin(): std::next(p);
+        size_t ticks = song.length(cv.begin(), cv.end(), p);
+        analogOut[cvChannel].reset_to(offset, vsemi * p->second.value);
+        interpolate<float>::signature *interp = nullptr;
+        switch (p->second.interp) {
+        case interpol::linear:
+          interp = &interpolate<float>::linear;
+          break;
+        case interpol::cosine:
+          interp = &interpolate<float>::cosine;
+          break;
+        case interpol::none:
+          break;
+        }
+        if (p->second.value != next->second.value && interp) {
+          analogOut[cvChannel].add_point(ticks * gateTime,
+                                         vsemi * next->second.value, interp);
+        }
+        analogOut[cvChannel+1].set_for(offset, 4_V, ticks * gateTime * 0.9);
+      }
+      cvChannel += 2;
+      if (cvChannel >= analogOut.size()) {
+        break;
+      }
+    }
+
+    for (auto const &trigger: song.trigger()) {
+      auto p = trigger.find(position);
+      if (p != trigger.end()) {
+        digitalOut[triggerChannel].set_for(offset * 2, 5_ms);
+      }
+      triggerChannel += 1;
+      if (triggerChannel >= digitalOut.size()) {
+        break;
+      }
+    }
+  }
 }
 
 Pepper::~Pepper() {
