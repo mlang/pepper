@@ -35,7 +35,7 @@ public:
                 CVTrack::const_iterator pos
   ) const {
     if (pos != end) {
-      bool const is_last = std::next(pos) == end;
+      bool const is_last = std::next(pos) == end || std::next(pos)->first >= size;
       if (pos == begin && is_last) return size;
 
       return (size - pos->first + (is_last? begin: std::next(pos))->first) % size;

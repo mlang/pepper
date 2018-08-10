@@ -979,7 +979,20 @@ void Display::SequencerTab::click(unsigned int cell, Display &display) {
     int const cvY = y - 3 - song.trigger().size();
     int const cvX = x + cell;
     if (cvX < song.length()) {
-      song.cv()[currentCVTrack][cvX] = {60 - cvY, interpol::none};
+      auto &track = song.cv()[currentCVTrack];
+      auto const p = track.find(cvX);
+      if (p != track.end()) {
+        switch (p->second.interp) {
+        case interpol::none:
+          p->second.interp = interpol::linear;
+          break;
+        case interpol::linear:
+          track.erase(cvX);
+          break;
+        }
+      } else {
+        track[cvX] = {60 - cvY, interpol::none};
+      }
       drawSong();
       display.redraw();
       display.pepper.sendRequest(UpdateSong { new Song(song) });
@@ -1038,7 +1051,8 @@ void Sequencer::play(unsigned int offset) {
       if (p != cv.end()) {
         constexpr auto vsemi = 1_V / 12;
         auto gateTime = clock.duration().value_or(60_s/120/4);
-        bool const last = std::next(p) == cv.end();
+        bool const last = std::next(p) == cv.end()
+                       || std::next(p)->first >= song.length();
         auto next = last? cv.begin(): std::next(p);
         size_t ticks = song.length(cv.begin(), cv.end(), p);
         analogOut[cvChannel].reset_to(offset, vsemi * p->second.value);
